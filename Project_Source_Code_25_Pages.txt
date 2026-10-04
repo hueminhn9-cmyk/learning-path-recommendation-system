@@ -1,0 +1,1286 @@
+========================================================================
+                    PROJECT SOURCE CODE (Approx. 25 Pages)              
+========================================================================
+
+
+
+========================================================================
+ File: flask_app.py
+========================================================================
+
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+import numpy as np
+import tensorflow as tf
+import joblib
+import mysql.connector
+from mysql.connector import Error
+import os
+
+app = Flask(__name__)
+app.secret_key = 'super_secret_key_mca_project'
+
+# File Upload Configuration
+UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+# =============================
+# DATABASE CONNECTION
+# =============================
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def interest_to_number(interest):
+    """Convert interest string to numeric representation for model"""
+    mapping = {'Low': 0, 'Medium': 1, 'High': 2}
+    return mapping.get(interest, 1) # Default to Medium if not found
+
+# =============================
+# DATABASE INITIALIZATION
+# =============================
+# =============================
+# DATABASE INITIALIZATION
+# =============================
+def init_db():
+    try:
+        # First connect to MySQL Server to ensure DB exists
+        conn = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password=""
+        )
+        if conn.is_connected():
+            cursor = conn.cursor()
+            cursor.execute("CREATE DATABASE IF NOT EXISTS student_learning_db")
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+        # Connect to the specific database
+        db_conn = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="",
+            database="student_learning_db"
+        )
+        if db_conn.is_connected():
+            db_cursor = db_conn.cursor()
+            
+            # 1. Users Table
+            db_cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    email VARCHAR(255) UNIQUE NOT NULL,
+                    password VARCHAR(255) NOT NULL,
+                    name VARCHAR(255),
+                    roll_number VARCHAR(100),
+                    interest VARCHAR(50),
+                    current_level VARCHAR(50) DEFAULT 'Beginner'
+                )
+            ''')
+
+            # 2. Assessments Table (Historical records)
+            db_cursor.execute('''
+                CREATE TABLE IF NOT EXISTS assessments (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT,
+                    subject VARCHAR(100),
+                    marks INT,
+                    interest VARCHAR(50),
+                    time_spent FLOAT,
+                    predicted_level VARCHAR(50),
+                    confidence FLOAT,
+                    improvement_areas TEXT,
+                    next_steps TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            ''')
+            
+            # Migration: Add missing columns if they don't exist
+            try:
+                db_cursor.execute("ALTER TABLE assessments ADD COLUMN interest VARCHAR(50) AFTER marks")
+                db_cursor.execute("ALTER TABLE assessments ADD COLUMN time_spent FLOAT AFTER interest")
+                db_cursor.execute("ALTER TABLE assessments ADD COLUMN improvement_areas TEXT AFTER confidence")
+                db_cursor.execute("ALTER TABLE assessments ADD COLUMN next_steps TEXT AFTER improvement_areas")
+                db_conn.commit()
+            except:
+                pass # Columns already exist
+            
+            # 3. Courses/Content Table
+            db_cursor.execute('''
+                CREATE TABLE IF NOT EXISTS courses (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    level VARCHAR(50),
+                    title VARCHAR(255),
+                    url VARCHAR(255),
+                    description TEXT,
+                    subject VARCHAR(100) DEFAULT 'General'
+                )
+            ''')
+            
+            # Migration: Add subject column if it doesn't exist
+            try:
+                db_cursor.execute("ALTER TABLE courses ADD COLUMN subject VARCHAR(100) DEFAULT 'General' AFTER description")
+                db_conn.commit()
+            except:
+                pass # Column already exists
+
+            # 4. Questions Table for Assessment Module
+            db_cursor.execute('''
+                CREATE TABLE IF NOT EXISTS questions (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    subject VARCHAR(100),
+                    question_text TEXT,
+                    option_a VARCHAR(255),
+                    option_b VARCHAR(255),
+                    option_c VARCHAR(255),
+                    option_d VARCHAR(255),
+                    correct_option CHAR(1)
+                )
+            ''')
+
+            # Add Dummy Courses if empty
+            db_cursor.execute("SELECT COUNT(*) FROM courses")
+            if db_cursor.fetchone()[0] == 0:
+                courses_data = [
+                    ("Beginner", "Intro to Data Science", "https://www.youtube.com/watch?v=ua-CiDNNj30", "Basics of data science.", "Data Science"),
+                    ("Beginner", "Machine Learning Basics", "https://www.youtube.com/watch?v=GwIo3gDZCVQ", "ML fundamentals.", "Machine Learning"),
+                    ("Intermediate", "EDA Projects", "https://www.youtube.com/watch?v=FNLLxYcUnow", "Hands-on EDA.", "Data Science"),
+                    ("Intermediate", "Machine Learning Algorithms", "https://www.youtube.com/watch?v=Gv9_4yMHFhI", "Introduction to various ML algorithms.", "Machine Learning"),
+                    ("Advanced", "Deep Learning Specialization", "https://www.youtube.com/results?search_query=Deep+Learning+Specialization", "Advanced neural networks.", "Deep Learning"),
+                    ("Beginner", "Python for AI", "https://www.youtube.com/watch?v=mkv5mxnxkoM", "Python basics for AI.", "General"),
+                    ("Intermediate", "Data Structures in Python", "https://www.youtube.com/watch?v=pkYVOmU3PSU", "Important data structures.", "General"),
+                    ("Advanced", "System Design for AI", "https://www.youtube.com/watch?v=m8Iic2WJpTo", "Designing AI systems.", "General"),
+                    ("Beginner", "Big Data Fundamentals", "https://www.youtube.com/watch?v=1vbXmCrkT3Y", "Intro to Big Data.", "Big Data"),
+                    ("Intermediate", "Hadoop & Spark Basics", "https://www.youtube.com/watch?v=S33_WioG7pE", "Learning ecosystem.", "Big Data"),
+                    ("Advanced", "Cloud Architecture", "https://www.youtube.com/watch?v=2LaAJq1lB1Q", "Advanced cloud systems.", "Cloud Computing")
+                ]
+                db_cursor.executemany("INSERT INTO courses (level, title, url, description, subject) VALUES (%s, %s, %s, %s, %s)", courses_data)
+
+            # Add Dummy Questions if empty
+            db_cursor.execute("SELECT COUNT(*) FROM questions")
+            if db_cursor.fetchone()[0] == 0:
+                questions_data = [
+                    ("Data Science", "What is the primary language used in Data Science?", "Java", "Python", "C++", "Ruby", "B"),
+                    ("Machine Learning", "Which of these is a supervised learning algorithm?", "K-Means", "PCA", "Linear Regression", "Apriori", "C"),
+                    ("AI", "Who is the father of Artificial Intelligence?", "Alan Turing", "John McCarthy", "Elon Musk", "Andrew Ng", "B")
+                ]
+                db_cursor.executemany("INSERT INTO questions (subject, question_text, option_a, option_b, option_c, option_d, correct_option) VALUES (%s, %s, %s, %s, %s, %s, %s)", questions_data)
+            
+            db_conn.commit()
+            db_cursor.close()
+            db_conn.close()
+            print("Successfully initialized MySQL Database with all modules.")
+    except Error as e:
+        print(f"Error while connecting to MySQL: {e}")
+
+# Call init_db once
+init_db()
+
+# =============================
+# LOAD MODEL & DEPENDENCIES
+# =============================
+# Load the AI Models once when the server starts
+model = None
+scaler = None
+level_map = None
+
+try:
+    model = tf.keras.models.load_model("model/student_model.h5")
+    scaler = joblib.load("model/scaler.pkl")
+    level_map = joblib.load("model/level_map.pkl")
+    print("AI Models loaded successfully.")
+except Exception as e:
+    print(f"Error loading models: {e}")
+
+# Default Fallback Resources (if DB empty)
+LEARNING_RESOURCES = {
+    "Beginner": [
+        {"title": "Intro to Data Science", "url": "https://www.youtube.com/watch?v=ua-CiDNNj30", "description": "Basics of data science."},
+        {"title": "Machine Learning Basics", "url": "https://www.youtube.com/watch?v=GwIo3gDZCVQ", "description": "ML fundamentals."}
+    ],
+    "Intermediate": [
+        {"title": "EDA Projects", "url": "https://www.youtube.com/watch?v=a2BDULHeb_8", "description": "Hands-on EDA."}
+    ],
+    "Advanced": [
+        {"title": "Deep Learning Specialization", "url": "https://www.youtube.com/watch?v=G1P2IaBcXx8&t=17s", "description": "Advanced neural networks."}
+    ]
+}
+
+# =============================
+# UTILITY FUNCTIONS
+# =============================
+def interest_to_number(interest):
+    """Convert interest text to numeric"""
+    return {"Low": 1, "Medium": 2, "High": 3}.get(interest, 2)
+
+def get_db_connection():
+    """Establish and return a MySQL database connection"""
+    try:
+        conn = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="",
+            database="student_learning_db",
+            auth_plugin='mysql_native_password'
+        )
+        return conn
+    except Error as e:
+        print(f"Connection Error: {e}")
+        return None
+
+from functools import wraps
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            flash('Please log in first.', 'error')
+            return redirect(url_for('login'))
+        if session.get('user_role') != 'admin':
+            flash('Access denied. Administrator privileges required.', 'error')
+            return redirect(url_for('dashboard'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# =============================
+# ROUTES
+# =============================
+
+@app.route('/', methods=['GET', 'POST'])
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Login Page Route with MySQL Verification"""
+    if request.method == 'POST':
+        email = request.form.get('email')
+        password = request.form.get('password')
+        
+        conn = get_db_connection()
+        if conn and conn.is_connected():
+            try:
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute("SELECT * FROM users WHERE email = %s AND password = %s", (email, password))
+                user = cursor.fetchone()
+                cursor.close()
+                conn.close()
+
+                if user:
+                    session['logged_in'] = True
+                    session['user_id'] = user['id']
+                    session['user_email'] = user['email']
+                    session['user_name'] = user['name']
+                    session['user_role'] = user.get('role', 'student')
+                    
+                    if session['user_role'] == 'admin':
+                        flash('🛡️ Admin detected. Redirecting to Management Console...', 'success')
+                        return redirect(url_for('admin_dashboard'))
+                    return redirect(url_for('dashboard'))
+                else:
+                    flash('❌ Invalid email or password.', 'error')
+            except Error as e:
+                print(f"Login error: {e}")
+                flash('An error occurred during login.', 'error')
+        else:
+            flash('Database connection failed.', 'error')
+            
+    return render_template('index.html')
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    """Dedicated Admin Login Route"""
+    if request.method == 'POST':
+        email = request.form.get('email')
+        password = request.form.get('password')
+        
+        conn = get_db_connection()
+        if conn and conn.is_connected():
+            try:
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute("SELECT * FROM users WHERE email = %s AND password = %s AND role = 'admin'", (email, password))
+                user = cursor.fetchone()
+                cursor.close()
+                conn.close()
+
+                if user:
+                    session['logged_in'] = True
+                    session['user_id'] = user['id']
+                    session['user_email'] = user['email']
+                    session['user_name'] = user['name']
+                    session['user_role'] = 'admin'
+                    flash(f'🛡️ Administrator Authenticated: {user["name"]}', 'success')
+                    return redirect(url_for('admin_dashboard'))
+                else:
+                    flash('❌ Invalid admin credentials or access denied.', 'error')
+            except Error as e:
+                print(f"Admin login error: {e}")
+                flash('An error occurred during authentication.', 'error')
+        else:
+            flash('Database connection failed.', 'error')
+            
+    return render_template('admin_login.html')
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    """Registration Page Route"""
+    if request.method == 'POST':
+        name = request.form.get('name')
+        roll = request.form.get('roll')
+        email = request.form.get('email')
+        password = request.form.get('password')
+        interest = request.form.get('interest')
+
+        conn = get_db_connection()
+        if conn and conn.is_connected():
+            try:
+                cursor = conn.cursor()
+                # Check if user already exists
+                cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+                if cursor.fetchone():
+                    flash('❌ Email already registered.', 'error')
+                else:
+                    query = "INSERT INTO users (name, roll_number, email, password, interest, role) VALUES (%s, %s, %s, %s, %s, 'student')"
+                    cursor.execute(query, (name, roll, email, password, interest))
+                    conn.commit()
+                    flash('✅ Registration successful! Please login.', 'success')
+                    return redirect(url_for('login'))
+                cursor.close()
+                conn.close()
+            except Error as e:
+                print(f"Registration error: {e}")
+                flash('Registration failed.', 'error')
+        else:
+            flash('Database connection failed.', 'error')
+
+    return render_template('register.html')
+
+@app.route('/dashboard')
+def dashboard():
+    """Student Dashboard showing progress and recommendations"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    
+    user_id = session.get('user_id')
+    # Fetch user data and latest assessment
+    conn = get_db_connection()
+    user_data = None
+    latest_assessment = None
+    recommended_courses = []
+    stats = {
+        'total_assessments': 0,
+        'avg_marks': 0,
+        'avg_time': 0,
+        'latest_level': 'N/A'
+    }
+
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor(dictionary=True)
+            # User Info
+            cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+            user_data = cursor.fetchone()
+            
+            # Aggregate Stats
+            cursor.execute("SELECT COUNT(*) as total, AVG(marks) as avg_m, AVG(time_spent) as avg_t FROM assessments WHERE user_id = %s", (user_id,))
+            agg = cursor.fetchone()
+            if agg and agg['total'] > 0:
+                stats['total_assessments'] = agg['total']
+                stats['avg_marks'] = round(agg['avg_m'] or 0, 1)
+                stats['avg_time'] = round(agg['avg_t'] or 0, 1)
+
+            # Latest Assessment
+            cursor.execute("SELECT * FROM assessments WHERE user_id = %s ORDER BY created_at DESC LIMIT 1", (user_id,))
+            latest_assessment = cursor.fetchone()
+            if latest_assessment:
+                stats['latest_level'] = latest_assessment['predicted_level']
+            
+            # Recommended courses based on level
+            level = user_data.get('current_level', 'Beginner')
+            cursor.execute("SELECT * FROM courses WHERE level = %s", (level,))
+            recommended_courses = cursor.fetchall()
+
+            cursor.close()
+            conn.close()
+        except Error as e:
+            print(f"Dashboard error: {e}")
+
+    from datetime import datetime
+    now = datetime.now().strftime("%B %d, %Y | %H:%M")
+
+    return render_template('dashboard.html', 
+                         user=user_data, 
+                         assessment=latest_assessment, 
+                         stats=stats,
+                         now=now,
+                         courses=recommended_courses)
+
+@app.route('/assessment')
+def assessment():
+    """Assessment Form Route"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+        
+    return render_template('assessment.html')
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    flash('Successfully logged out.', 'success')
+    return redirect(url_for('login'))
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    """Handles Assessment Form Submission & AI Prediction"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    # 1. PREDICT LEVEL USING NEURAL NETWORK
+    marks = int(request.form.get('marks', 0))
+    time_spent = float(request.form.get('time_spent', 0))
+    subject = request.form.get('subject', 'General')
+    roll = request.form.get('roll', 'N/A')
+    
+    # Predict Interest Level automatically (AI-like logic)
+    # High if high marks or high study time
+    # Low if both are low
+    marks_int = int(marks)
+    time_float = float(time_spent)
+    
+    if marks_int >= 80 and time_float >= 4:
+        interest = "High"
+    elif marks_int < 40 and time_float < 2:
+        interest = "Low"
+    else:
+        interest = "Medium"
+        
+    # 0. HANDLE FILE UPLOAD
+    marksheet_filename = None
+    if 'marksheet' in request.files:
+        file = request.files['marksheet']
+        if file and file.filename != '' and allowed_file(file.filename):
+            from werkzeug.utils import secure_filename
+            marksheet_filename = secure_filename(f"{roll}_{file.filename}")
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], marksheet_filename))
+
+    # 1. AI PREDICTION
+    if model is None:
+        flash('❌ AI model not loaded. Cannot process request.', 'error')
+        return redirect(url_for('assessment'))
+        
+    # Prepare input data matching the original Streamlit logic
+    marks_val = int(marks)
+    time_val = float(time_spent)
+    input_data = np.array([[marks_val, interest_to_number(interest), time_val]])
+    input_scaled = scaler.transform(input_data)
+
+    # Get prediction
+    prediction = model.predict(input_scaled)
+    predicted_class = np.argmax(prediction[0])
+    confidence = np.max(prediction[0]) * 100
+
+    # Get level string
+    level = level_map.get(predicted_class, "Unknown")
+    # 2. GENERATE IMPROVEMENT AREAS & LEARNING PATH
+    recommendations = {
+        "Data Science": {
+            "low": ["Mathematics for Data Science (Linear Algebra, Calculus)", "Data Science Fundamentals", "Basics of Statistics"],
+            "med": ["Exploratory Data Analysis (EDA) with Pandas", "Data Visualization (Matplotlib, Seaborn)", "Intermediate Statistics & Probability"],
+            "high": ["Advanced Feature Engineering", "Statistical Modeling", "Big Data Analytics with Spark"]
+        },
+        "Machine Learning": {
+            "low": ["Basic Algorithms (Linear Regression, KNN)", "Scikit-Learn Fundamentals", "Data Preprocessing Techniques"],
+            "med": ["Supervised vs Unsupervised Learning Deep Dive", "Model Evaluation Metrics (Precision, Recall, F1)", "Cross-Validation & Regularization"],
+            "high": ["Neural Networks Architecture", "Ensemble Methods (XGBoost, Random Forest)", "MLOps & Model Deployment"]
+        },
+        "Deep Learning": {
+            "low": ["Neural Networks Basics", "TensorFlow/PyTorch Fundamentals", "Activation Functions"],
+            "med": ["Convolutional Neural Networks (CNN)", "Recurrent Neural Networks (RNN)", "Backpropagation & Gradient Descent"],
+            "high": ["Generative Adversarial Networks (GANs)", "Transformers & Attention Mechanisms", "Reinforcement Learning"]
+        },
+        "Big Data": {
+            "low": ["Introduction to Big Data Concepts", "Distributed Systems Basics", "HDFS Fundamentals"],
+            "med": ["MapReduce Algorithms", "Apache Spark DataFrames", "NoSQL Databases (MongoDB, Cassandra)"],
+            "high": ["Real-time Stream Processing (Kafka)", "Advanced Spark Optimization", "Data Lake Architecture"]
+        },
+        "Cloud Computing": {
+            "low": ["Cloud Basics & Service Models (IaaS, PaaS, SaaS)", "Virtualization Concepts", "Intro to AWS/Azure/GCP"],
+            "med": ["Cloud Storage Solutions", "Serverless Computing", "Containerization (Docker) & Orchestration"],
+            "high": ["Multi-Cloud Deployment", "Infrastructure as Code (Terraform)", "Cloud Security & Compliance"]
+        },
+        "Web Development": {
+            "low": ["HTML5 & CSS3 Basics", "JavaScript Fundamentals", "Responsive Web Design"],
+            "med": ["Frontend Frameworks (React/Vue/Angular)", "Backend Routing & APIs (Node.js/Django/Flask)", "Database Integration"],
+            "high": ["Full-Stack Application Deployment", "Microservices Architecture", "WebAssembly & Performance Optimization"]
+        },
+        "General": {
+            "low": ["Fundamental Programming", "Logical Reasoning", "Basic Computer Science"],
+            "med": ["Data Structures", "Web Development Basics", "Object-Oriented Programming"],
+            "high": ["Software Architecture", "Advanced Algorithms", "System Design"]
+        }
+    }
+
+    # Determine specific recommendations
+    subj_node = recommendations.get(subject, recommendations["General"])
+    if marks < 50:
+        improvement_areas = subj_node["low"]
+        next_steps = "Focus on foundational concepts. We recommend completing 2-3 introductory courses before retaking the assessment."
+    elif marks < 80:
+        improvement_areas = subj_node["med"]
+        next_steps = "You have a solid base. Now, practice with real-world datasets and focus on intermediate implementation details."
+    else:
+        improvement_areas = subj_node["high"]
+        next_steps = "Great job! You're ready for advanced specializations. Try building a complex project or contributing to open source."
+
+    # 3. SAVE TO MYSQL DATABASE
+    conn = get_db_connection()
+    user_id = session.get('user_id')
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor()
+            # Save assessment with recommendations
+            query = """
+                INSERT INTO assessments 
+                (user_id, subject, marks, interest, time_spent, predicted_level, confidence, improvement_areas, next_steps) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            cursor.execute(query, (user_id, subject, marks, interest, float(time_spent), level, float(confidence), 
+                                 ", ".join(improvement_areas), next_steps))
+            
+            # Update User Level
+            cursor.execute("UPDATE users SET current_level = %s WHERE id = %s", (level, user_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Error as e:
+            print(f"Error saving to database: {e}")
+            flash('⚠️ Prediction succeeded, but failed to save to database.', 'error')
+    else:
+        flash('⚠️ Database connection failed. Data not saved.', 'error')
+
+    # 4. FETCH RESOURCES FROM DB (Strictly filtered by level AND subject)
+    resources = []
+    conn = get_db_connection()
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor(dictionary=True)
+            # Find exact matches for both level and subject
+            query = "SELECT * FROM courses WHERE level = %s AND subject = %s"
+            cursor.execute(query, (level, subject))
+            all_resources = cursor.fetchall()
+            
+            # Deduplicate by URL
+            seen_urls = set()
+            for res in all_resources:
+                if res['url'] not in seen_urls:
+                    resources.append(res)
+                    seen_urls.add(res['url'])
+                    
+            # Fallback to 'General' subject if exact subject is empty in database
+            if not resources:
+                cursor.execute("SELECT * FROM courses WHERE level = %s AND subject = 'General'", (level,))
+                fallback_res = cursor.fetchall()
+                for fallback in fallback_res:
+                    if fallback['url'] not in seen_urls:
+                        resources.append(fallback)
+                        seen_urls.add(fallback['url'])
+
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"Resource fetch error: {e}")
+
+    # Render results page with the data
+    return render_template('result.html', 
+                          name=session.get('user_name'), 
+                          roll=roll, 
+                          subject=subject, 
+                          marks=marks, 
+                          interest=interest, 
+                          time_spent=time_spent, 
+                          level=level, 
+                          confidence=confidence,
+                          improvement_areas=improvement_areas,
+                          next_steps=next_steps,
+                          resources=resources)
+
+@app.route('/progress')
+def progress():
+    """Progress Tracking with Charts"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+        
+    user_id = session.get('user_id')
+    assessments_data = []
+    
+    conn = get_db_connection()
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM assessments WHERE user_id = %s ORDER BY created_at ASC", (user_id,))
+            assessments_data = cursor.fetchall()
+            cursor.close()
+            conn.close()
+        except Error as e:
+            print(f"Progress fetch error: {e}")
+            
+    return render_template('progress.html', assessments=assessments_data)
+
+@app.route('/resources')
+def resources_page():
+    """Learning Resources Library - Dynamic from Database"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+        
+    courses_data = []
+    conn = get_db_connection()
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM courses ORDER BY level, title")
+            courses_data = cursor.fetchall()
+            cursor.close()
+            conn.close()
+        except Error as e:
+            print(f"Resources fetch error: {e}")
+            
+    # Group courses by level and subject for better display
+    grouped_courses = {}
+    seen_urls = set()
+    for course in courses_data:
+        if course['url'] in seen_urls:
+            continue
+        seen_urls.add(course['url'])
+        
+        lvl = course['level']
+        subj = course.get('subject', 'General')
+        if lvl not in grouped_courses:
+            grouped_courses[lvl] = {}
+        if subj not in grouped_courses[lvl]:
+            grouped_courses[lvl][subj] = []
+        grouped_courses[lvl][subj].append(course)
+            
+    return render_template('resources.html', grouped_courses=grouped_courses)
+
+@app.route('/profile')
+def profile():
+    """User Profile Module"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    
+    user_id = session.get('user_id')
+    user_data = None
+    stats = {'total': 0, 'avg': 0}
+
+    conn = get_db_connection()
+    if conn and conn.is_connected():
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+        user_data = cursor.fetchone()
+        cursor.execute("SELECT COUNT(*) as total, AVG(marks) as avg_m FROM assessments WHERE user_id = %s", (user_id,))
+        agg = cursor.fetchone()
+        if agg:
+            stats['total'] = agg['total']
+            stats['avg'] = round(agg['avg_m'] or 0, 1)
+        cursor.close()
+        conn.close()
+
+    return render_template('profile.html', user=user_data, stats=stats)
+
+@app.route('/admin')
+@admin_required
+def admin_dashboard():
+    """Admin Dashboard showing system overview"""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor(dictionary=True)
+            
+            # Get stats
+            cursor.execute("SELECT COUNT(*) as count FROM users WHERE role = 'student'")
+            total_students = cursor.fetchone()['count']
+            
+            cursor.execute("SELECT COUNT(*) as count FROM assessments")
+            total_assessments = cursor.fetchone()['count']
+            
+            cursor.execute("SELECT * FROM assessments ORDER BY created_at DESC LIMIT 5")
+            recent_activity = cursor.fetchall()
+            
+            cursor.close()
+            conn.close()
+            
+            return render_template('admin_dashboard.html', 
+                                 total_students=total_students, 
+                                 total_assessments=total_assessments,
+                                 recent_activity=recent_activity)
+        except Error as e:
+            print(f"Error: {e}")
+            return "Internal Server Error", 500
+    return "Database Connection Failed", 500
+
+@app.route('/admin/resources', methods=['GET', 'POST'])
+@admin_required
+def admin_resources():
+    """Admin Resource Management"""
+    conn = get_db_connection()
+    if request.method == 'POST':
+        action = request.form.get('action')
+        title = request.form.get('title')
+        level = request.form.get('level')
+        res_type = request.form.get('type')
+        link = request.form.get('link')
+        subject = request.form.get('subject')
+        res_id = request.form.get('id')
+
+        if conn:
+            try:
+                cursor = conn.cursor()
+                if action == 'add':
+                    cursor.execute("INSERT INTO courses (title, level, url, description, subject) VALUES (%s, %s, %s, %s, %s)",
+                                 (title, level, link, "Added via Admin", subject))
+                    flash('Resource added successfully!', 'success')
+                elif action == 'edit':
+                    cursor.execute("UPDATE courses SET title=%s, level=%s, url=%s, subject=%s WHERE id=%s",
+                                 (title, level, link, subject, res_id))
+                    flash('Resource updated successfully!', 'success')
+                elif action == 'delete':
+                    cursor.execute("DELETE FROM courses WHERE id=%s", (res_id,))
+                    flash('Resource deleted successfully!', 'success')
+                
+                conn.commit()
+                cursor.close()
+                conn.close()
+            except Error as e:
+                flash(f'Error: {e}', 'error')
+        return redirect(url_for('admin_resources'))
+
+    resources_list = []
+    if conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM courses ORDER BY level, title")
+        resources_list = cursor.fetchall()
+        cursor.close()
+        conn.close()
+    return render_template('admin_resources.html', resources=resources_list)
+
+@app.route('/admin/students', methods=['GET', 'POST'])
+@admin_required
+def admin_students():
+    """Admin Student Management"""
+    conn = get_db_connection()
+    if request.method == 'POST':
+        action = request.form.get('action')
+        student_id = request.form.get('id')
+        name = request.form.get('name')
+        email = request.form.get('email')
+        roll = request.form.get('roll_number')
+
+        if conn:
+            try:
+                cursor = conn.cursor()
+                if action == 'edit':
+                    cursor.execute("UPDATE users SET name=%s, email=%s, roll_number=%s WHERE id=%s",
+                                 (name, email, roll, student_id))
+                    flash('Student updated successfully!', 'success')
+                elif action == 'delete':
+                    # Delete assessments first (foreign key)
+                    cursor.execute("DELETE FROM assessments WHERE user_id=%s", (student_id,))
+                    cursor.execute("DELETE FROM users WHERE id=%s", (student_id,))
+                    flash('Student and their records deleted!', 'warning')
+                
+                conn.commit()
+                cursor.close()
+                conn.close()
+            except Error as e:
+                flash(f'Error: {e}', 'error')
+        return redirect(url_for('admin_students'))
+
+    students_list = []
+    if conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM users WHERE role = 'student' ORDER BY name")
+        students_list = cursor.fetchall()
+        cursor.close()
+        conn.close()
+    return render_template('admin_students.html', students=students_list)
+
+@app.route('/records')
+@admin_required
+def records():
+    """Student Dashboard Route Fetching from MySQL"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+        
+    records_data = []
+    conn = get_db_connection()
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor(dictionary=True)
+            # Fetch assessments joined with user info
+            query = """
+                SELECT a.*, u.name, u.roll_number 
+                FROM assessments a 
+                JOIN users u ON a.user_id = u.id 
+                ORDER BY a.created_at DESC
+            """
+            cursor.execute(query)
+            records_data = cursor.fetchall()
+            cursor.close()
+            conn.close()
+        except Error as e:
+            print(f"Record fetch error: {e}")
+            flash('Error loading records.', 'error')
+            
+    return render_template('records.html', records=records_data)
+
+# =============================
+# MAIN EXECUTION
+# =============================
+if __name__ == '__main__':
+    # Run the Flask server
+    app.run(debug=True, port=5000)
+
+
+========================================================================
+ File: templates/layout.html
+========================================================================
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Student Advisor | Learning Path</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --sidebar-bg: rgba(30, 41, 59, 0.7);
+            --glass-bg: rgba(255, 255, 255, 0.03);
+            --accent-primary: #38bdf8;
+            --accent-secondary: #818cf8;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --beginner-red: #ef4444;
+            --intermediate-yellow: #f59e0b;
+            --advanced-green: #10b981;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.1) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(129, 140, 248, 0.1) 0px, transparent 50%);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+        }
+
+        /* Sidebar Navigation */
+        .sidebar {
+            width: 280px;
+            background: var(--sidebar-bg);
+            backdrop-filter: blur(20px);
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+            padding: 2rem 1.5rem;
+            height: 100vh;
+            position: fixed;
+            z-index: 1000;
+        }
+
+        .sidebar-logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent-primary);
+            margin-bottom: 3rem;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-decoration: none;
+        }
+
+        .nav-section {
+            margin-bottom: 2rem;
+        }
+
+        .nav-title {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1rem;
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+            padding-left: 0.75rem;
+        }
+
+        .nav-link {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 0.85rem 1rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            margin-bottom: 0.5rem;
+        }
+
+        .nav-link:hover, .nav-link.active {
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--accent-primary);
+            transform: translateX(5px);
+        }
+
+        .sidebar-footer {
+            margin-top: auto;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            padding-top: 2rem;
+        }
+
+        .user-mini-profile {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 1.5rem;
+        }
+
+        .avatar {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+        }
+
+        /* Main Content */
+        .main-content {
+            margin-left: 280px;
+            flex: 1;
+            padding: 2rem 3rem;
+            max-width: 1400px;
+            transition: margin-left 0.3s ease;
+        }
+
+        .no-sidebar {
+            margin-left: 0 !important;
+        }
+
+        /* Essential UI components */
+        .glass-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 24px;
+            padding: 2rem;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+        }
+
+        /* Use .btn-theme for primary large buttons */
+        .btn-theme {
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            color: white !important;
+            border: none;
+            padding: 0.85rem 1.75rem;
+            border-radius: 12px;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-theme:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
+            opacity: 0.95;
+        }
+
+        /* Support standard Bootstrap button sizes and states */
+        .btn-sm {
+            padding: 0.25rem 0.6rem !important;
+            font-size: 0.8rem !important;
+            border-radius: 6px !important;
+            display: inline-flex !important;
+            align-items: center;
+            justify-content: center;
+            height: auto !important;
+            width: auto !important;
+        }
+        
+        /* Standard Bootstrap button overrides for dark theme */
+        .btn-outline-danger {
+            color: #ef4444 !important;
+            border-color: #ef4444 !important;
+            background: transparent !important;
+        }
+        .btn-outline-danger:hover {
+            background-color: #ef4444 !important;
+            color: white !important;
+        }
+
+        .btn-outline-info {
+            color: #38bdf8 !important;
+            border-color: #38bdf8 !important;
+            background: transparent !important;
+        }
+        .btn-outline-info:hover {
+            background-color: #38bdf8 !important;
+            color: white !important;
+        }
+
+        .actions-cell {
+            display: flex !important;
+            gap: 10px !important;
+            justify-content: flex-end !important;
+            white-space: nowrap !important;
+        }
+
+        .actions-cell form { display: inline; }
+
+        .form-group { margin-bottom: 1.5rem; }
+        label { display: block; margin-bottom: 0.6rem; color: var(--text-secondary); font-size: 0.9rem; }
+        input, select, textarea {
+            width: 100%; padding: 0.85rem 1rem; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px; color: white; outline: none; transition: border-color 0.3s;
+        }
+        input:focus { border-color: var(--accent-primary); }
+
+        /* Level Badges */
+        .badge { padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
+        .badge-beginner { background: rgba(239, 68, 68, 0.2); color: var(--beginner-red); }
+        .badge-intermediate { background: rgba(245, 158, 11, 0.2); color: var(--intermediate-yellow); }
+        .badge-advanced { background: rgba(16, 185, 129, 0.2); color: var(--advanced-green); }
+
+        /* Animation */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fadeIn { animation: fadeIn 0.5s ease forwards; }
+
+        /* Flash Messages */
+        .flash-messages {
+            position: fixed; top: 2rem; right: 2rem; z-index: 2000;
+            display: flex; flex-direction: column; gap: 10px;
+        }
+        .alert {
+            padding: 1rem 1.5rem; border-radius: 12px; backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1); color: white;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2); animation: fadeIn 0.3s ease;
+        }
+        .alert-success { background: rgba(16, 185, 129, 0.8); }
+        .alert-error { background: rgba(239, 68, 68, 0.8); }
+
+    </style>
+</head>
+<body>
+
+    {% if session.logged_in %}
+    <div class="sidebar">
+        <a href="/dashboard" class="sidebar-logo">
+            <span>🗺️ AI Advisor</span>
+        </a>
+
+        <div class="nav-section">
+            <h3 class="nav-title">Navigation</h3>
+            {% if session.get('user_role') == 'student' %}
+            <a href="/dashboard" class="nav-link">🏠 Home</a>
+            <a href="/assessment" class="nav-link">📝 Assessment</a>
+            <a href="/progress" class="nav-link">📊 My Progress</a>
+            <a href="/resources" class="nav-link">📚 Resources</a>
+            <a href="/profile" class="nav-link">👤 Profile</a>
+            {% endif %}
+            {% if session.get('user_role') == 'admin' %}
+            <a href="/admin" class="nav-link" style="color: var(--accent-secondary);">🛡️ Admin Dashboard</a>
+            <a href="/admin/students" class="nav-link">👥 Manage Students</a>
+            <a href="/admin/resources" class="nav-link">📚 Manage Resources</a>
+            <a href="/records" class="nav-link">📁 All Assessment Records</a>
+            {% endif %}
+        </div>
+
+        <div class="sidebar-footer">
+            <div class="user-mini-profile">
+                <div class="avatar">{{ session.user_name[0] | upper }}</div>
+                <div>
+                    <div style="font-size: 0.9rem; font-weight: 600;">{{ session.user_name }}</div>
+                    <div style="font-size: 0.75rem; color: var(--text-secondary);">{{ session.user_email }}</div>
+                </div>
+            </div>
+            <a href="/logout" class="nav-link" style="color: var(--beginner-red);">🚪 Logout</a>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="main-content {{ 'no-sidebar' if not session.logged_in else '' }}">
+        <div class="flash-messages">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ 'success' if category == 'success' else 'error' }}">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+        </div>
+
+        {% block content %}{% endblock %}
+    </div>
+
+    <script>
+        // Auto-hide flash messages
+        setTimeout(() => {
+            const alerts = document.querySelectorAll('.alert');
+            alerts.forEach(alert => {
+                alert.style.opacity = '0';
+                setTimeout(() => alert.remove(), 500);
+            });
+        }, 3000);
+    </script>
+</body>
+</html>
+
+
+========================================================================
+ File: templates/dashboard.html
+========================================================================
+
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="animate-fadeIn">
+    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2.5rem;">
+        <div>
+            <h1 style="font-size: 2.5rem; margin-bottom: 0.5rem;">👋 Welcome, {{ user.name }}!</h1>
+            <p style="color: var(--text-secondary);">Here's a summary of your academic progress and AI recommendations.</p>
+        </div>
+        <div style="text-align: right;">
+            <div style="font-size: 1.1rem; font-weight: 600;">{{ now }}</div>
+            <div style="color: var(--accent-primary); font-size: 0.9rem;">Student Portal Active</div>
+        </div>
+    </div>
+
+    <!-- Quick Stats Row -->
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.5rem; margin-bottom: 3rem;">
+        <div class="glass-card" style="padding: 1.5rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 10px;">TOTAL ASSESSMENTS</div>
+            <div style="font-size: 2rem; font-weight: 700;">{{ stats.total_assessments }}</div>
+        </div>
+        <div class="glass-card" style="padding: 1.5rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 10px;">AVERAGE MARKS</div>
+            <div style="font-size: 2rem; font-weight: 700; color: var(--accent-primary);">{{ stats.avg_marks }}%</div>
+        </div>
+        <div class="glass-card" style="padding: 1.5rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 10px;">STUDY TIME (AVG)</div>
+            <div style="font-size: 2rem; font-weight: 700; color: var(--accent-secondary);">{{ stats.avg_time }}h/day</div>
+        </div>
+        <div class="glass-card" style="padding: 1.5rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 10px;">LATEST LEVEL</div>
+            <div>
+                <span class="badge badge-{{ stats.latest_level|lower if stats.latest_level != 'N/A' else 'beginner' }}" style="font-size: 1.2rem; padding: 8px 16px;">
+                    {{ stats.latest_level }}
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 2rem;">
+        <!-- Assessment Summary -->
+        <div class="glass-card">
+            <h3 style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 10px;">📊 Latest Assessment</h3>
+            {% if assessment %}
+                <div style="background: rgba(255,255,255,0.02); padding: 1.5rem; border-radius: 16px; border: 1px solid rgba(255,255,255,0.05);">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 1rem;">
+                        <span style="color: var(--text-secondary);">Subject:</span>
+                        <span style="font-weight: 600;">{{ assessment.subject }}</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 1rem;">
+                        <span style="color: var(--text-secondary);">Score:</span>
+                        <span style="font-weight: 600; color: var(--accent-primary);">{{ assessment.marks }}%</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 1.5rem;">
+                        <span style="color: var(--text-secondary);">Level:</span>
+                        <span class="badge {{ 'badge-beginner' if assessment.predicted_level == 'Beginner' else 'badge-intermediate' if assessment.predicted_level == 'Intermediate' else 'badge-advanced' }}">
+                            {{ assessment.predicted_level }}
+                        </span>
+                    </div>
+
+                    <div style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 1.5rem; margin-top: 1rem;">
+                        <h4 style="font-size: 0.9rem; color: var(--accent-secondary); margin-bottom: 1rem; text-transform: uppercase;">🚀 Roadmap for Growth</h4>
+                        <p style="font-size: 0.85rem; line-height: 1.5; color: var(--text-secondary); margin-bottom: 1rem;">
+                            {{ assessment.next_steps if assessment.next_steps else "Keep practicing to see personalized steps!" }}
+                        </p>
+                        {% if assessment.improvement_areas %}
+                        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                            {% for area in assessment.improvement_areas.split(', ') %}
+                            <span style="font-size: 0.75rem; background: rgba(56, 189, 248, 0.1); color: var(--accent-primary); padding: 4px 10px; border-radius: 6px;">
+                                {{ area }}
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-top: 2rem;">
+                        <a href="/progress" class="btn" style="width: 100%;">Detailed Progress</a>
+                    </div>
+                </div>
+            {% else %}
+                <div style="text-align: center; padding: 3rem 0;">
+                    <p style="color: var(--text-secondary); margin-bottom: 1.5rem;">No assessments recorded yet.</p>
+                    <a href="/assessment" class="btn">Start Your First Test</a>
+                </div>
+            {% endif %}
+        </div>
+
+        <!-- Key Features / Quick Links -->
+        <div class="glass-card">
+            <h3 style="margin-bottom: 1.5rem;">✨ Key Features</h3>
+            <div style="display: flex; flex-direction: column; gap: 1rem;">
+                <div style="display: flex; gap: 12px; align-items: flex-start;">
+                    <div style="background: rgba(56, 189, 248, 0.1); padding: 8px; border-radius: 8px;">🤖</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 0.95rem;">AI Analysis</div>
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">Deep learning powered predictions.</div>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 12px; align-items: flex-start;">
+                    <div style="background: rgba(129, 140, 248, 0.1); padding: 8px; border-radius: 8px;">🎯</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 0.95rem;">Personalized Path</div>
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">Tailored recommendations for you.</div>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 12px; align-items: flex-start;">
+                    <div style="background: rgba(16, 185, 129, 0.1); padding: 8px; border-radius: 8px;">📈</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 0.95rem;">Progress Tracking</div>
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">Visual trends of your learning journey.</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 1.5rem;">
+                <a href="/assessment" class="btn btn-full" style="margin-bottom: 10px;">📝 New Assessment</a>
+                <a href="/resources" class="btn btn-full" style="background: transparent; border: 1px solid var(--accent-primary); color: var(--accent-primary);">📚 Browse Resources</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

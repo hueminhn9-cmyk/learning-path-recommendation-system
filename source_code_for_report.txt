@@ -1,0 +1,3739 @@
+PROJECT SOURCE CODE
+===================
+
+File: .\flask_app.py
+--------------------------------------------------
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+import numpy as np
+import tensorflow as tf
+import joblib
+import mysql.connector
+from mysql.connector import Error
+import os
+
+app = Flask(__name__)
+app.secret_key = 'super_secret_key_mca_project'
+
+# File Upload Configuration
+UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+# =============================
+# DATABASE CONNECTION
+# =============================
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def interest_to_number(interest):
+    """Convert interest string to numeric representation for model"""
+    mapping = {'Low': 0, 'Medium': 1, 'High': 2}
+    return mapping.get(interest, 1) # Default to Medium if not found
+
+# =============================
+# DATABASE INITIALIZATION
+# =============================
+# =============================
+# DATABASE INITIALIZATION
+# =============================
+def init_db():
+    try:
+        # First connect to MySQL Server to ensure DB exists
+        conn = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password=""
+        )
+        if conn.is_connected():
+            cursor = conn.cursor()
+            cursor.execute("CREATE DATABASE IF NOT EXISTS student_learning_db")
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+        # Connect to the specific database
+        db_conn = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="",
+            database="student_learning_db"
+        )
+        if db_conn.is_connected():
+            db_cursor = db_conn.cursor()
+            
+            # 1. Users Table
+            db_cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    email VARCHAR(255) UNIQUE NOT NULL,
+                    password VARCHAR(255) NOT NULL,
+                    name VARCHAR(255),
+                    roll_number VARCHAR(100),
+                    interest VARCHAR(50),
+                    current_level VARCHAR(50) DEFAULT 'Beginner'
+                )
+            ''')
+
+            # 2. Assessments Table (Historical records)
+            db_cursor.execute('''
+                CREATE TABLE IF NOT EXISTS assessments (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT,
+                    subject VARCHAR(100),
+                    marks INT,
+                    interest VARCHAR(50),
+                    time_spent FLOAT,
+                    predicted_level VARCHAR(50),
+                    confidence FLOAT,
+                    improvement_areas TEXT,
+                    next_steps TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            ''')
+            
+            # Migration: Add missing columns if they don't exist
+            try:
+                db_cursor.execute("ALTER TABLE assessments ADD COLUMN interest VARCHAR(50) AFTER marks")
+                db_cursor.execute("ALTER TABLE assessments ADD COLUMN time_spent FLOAT AFTER interest")
+                db_cursor.execute("ALTER TABLE assessments ADD COLUMN improvement_areas TEXT AFTER confidence")
+                db_cursor.execute("ALTER TABLE assessments ADD COLUMN next_steps TEXT AFTER improvement_areas")
+                db_conn.commit()
+            except:
+                pass # Columns already exist
+            
+            # 3. Courses/Content Table
+            db_cursor.execute('''
+                CREATE TABLE IF NOT EXISTS courses (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    level VARCHAR(50),
+                    title VARCHAR(255),
+                    url VARCHAR(255),
+                    description TEXT,
+                    subject VARCHAR(100) DEFAULT 'General'
+                )
+            ''')
+            
+            # Migration: Add subject column if it doesn't exist
+            try:
+                db_cursor.execute("ALTER TABLE courses ADD COLUMN subject VARCHAR(100) DEFAULT 'General' AFTER description")
+                db_conn.commit()
+            except:
+                pass # Column already exists
+
+            # 4. Questions Table for Assessment Module
+            db_cursor.execute('''
+                CREATE TABLE IF NOT EXISTS questions (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    subject VARCHAR(100),
+                    question_text TEXT,
+                    option_a VARCHAR(255),
+                    option_b VARCHAR(255),
+                    option_c VARCHAR(255),
+                    option_d VARCHAR(255),
+                    correct_option CHAR(1)
+                )
+            ''')
+
+            # Add Dummy Courses if empty
+            db_cursor.execute("SELECT COUNT(*) FROM courses")
+            if db_cursor.fetchone()[0] == 0:
+                courses_data = [
+                    ("Beginner", "Intro to Data Science", "https://www.youtube.com/watch?v=ua-CiDNNj30", "Basics of data science.", "Data Science"),
+                    ("Beginner", "Machine Learning Basics", "https://www.youtube.com/watch?v=GwIo3gDZCVQ", "ML fundamentals.", "Machine Learning"),
+                    ("Intermediate", "EDA Projects", "https://www.youtube.com/watch?v=FNLLxYcUnow", "Hands-on EDA.", "Data Science"),
+                    ("Intermediate", "Machine Learning Algorithms", "https://www.youtube.com/watch?v=Gv9_4yMHFhI", "Introduction to various ML algorithms.", "Machine Learning"),
+                    ("Advanced", "Deep Learning Specialization", "https://www.youtube.com/results?search_query=Deep+Learning+Specialization", "Advanced neural networks.", "Deep Learning"),
+                    ("Beginner", "Python for AI", "https://www.youtube.com/watch?v=mkv5mxnxkoM", "Python basics for AI.", "General"),
+                    ("Intermediate", "Data Structures in Python", "https://www.youtube.com/watch?v=pkYVOmU3PSU", "Important data structures.", "General"),
+                    ("Advanced", "System Design for AI", "https://www.youtube.com/watch?v=m8Iic2WJpTo", "Designing AI systems.", "General"),
+                    ("Beginner", "Big Data Fundamentals", "https://www.youtube.com/watch?v=1vbXmCrkT3Y", "Intro to Big Data.", "Big Data"),
+                    ("Intermediate", "Hadoop & Spark Basics", "https://www.youtube.com/watch?v=S33_WioG7pE", "Learning ecosystem.", "Big Data"),
+                    ("Advanced", "Cloud Architecture", "https://www.youtube.com/watch?v=2LaAJq1lB1Q", "Advanced cloud systems.", "Cloud Computing")
+                ]
+                db_cursor.executemany("INSERT INTO courses (level, title, url, description, subject) VALUES (%s, %s, %s, %s, %s)", courses_data)
+
+            # Add Dummy Questions if empty
+            db_cursor.execute("SELECT COUNT(*) FROM questions")
+            if db_cursor.fetchone()[0] == 0:
+                questions_data = [
+                    ("Data Science", "What is the primary language used in Data Science?", "Java", "Python", "C++", "Ruby", "B"),
+                    ("Machine Learning", "Which of these is a supervised learning algorithm?", "K-Means", "PCA", "Linear Regression", "Apriori", "C"),
+                    ("AI", "Who is the father of Artificial Intelligence?", "Alan Turing", "John McCarthy", "Elon Musk", "Andrew Ng", "B")
+                ]
+                db_cursor.executemany("INSERT INTO questions (subject, question_text, option_a, option_b, option_c, option_d, correct_option) VALUES (%s, %s, %s, %s, %s, %s, %s)", questions_data)
+            
+            db_conn.commit()
+            db_cursor.close()
+            db_conn.close()
+            print("Successfully initialized MySQL Database with all modules.")
+    except Error as e:
+        print(f"Error while connecting to MySQL: {e}")
+
+# Call init_db once
+init_db()
+
+# =============================
+# LOAD MODEL & DEPENDENCIES
+# =============================
+# Load the AI Models once when the server starts
+model = None
+scaler = None
+level_map = None
+
+try:
+    model = tf.keras.models.load_model("model/student_model.h5")
+    scaler = joblib.load("model/scaler.pkl")
+    level_map = joblib.load("model/level_map.pkl")
+    print("AI Models loaded successfully.")
+except Exception as e:
+    print(f"Error loading models: {e}")
+
+# Default Fallback Resources (if DB empty)
+LEARNING_RESOURCES = {
+    "Beginner": [
+        {"title": "Intro to Data Science", "url": "https://www.youtube.com/watch?v=ua-CiDNNj30", "description": "Basics of data science."},
+        {"title": "Machine Learning Basics", "url": "https://www.youtube.com/watch?v=GwIo3gDZCVQ", "description": "ML fundamentals."}
+    ],
+    "Intermediate": [
+        {"title": "EDA Projects", "url": "https://www.youtube.com/watch?v=a2BDULHeb_8", "description": "Hands-on EDA."}
+    ],
+    "Advanced": [
+        {"title": "Deep Learning Specialization", "url": "https://www.youtube.com/watch?v=G1P2IaBcXx8&t=17s", "description": "Advanced neural networks."}
+    ]
+}
+
+# =============================
+# UTILITY FUNCTIONS
+# =============================
+def interest_to_number(interest):
+    """Convert interest text to numeric"""
+    return {"Low": 1, "Medium": 2, "High": 3}.get(interest, 2)
+
+def get_db_connection():
+    """Establish and return a MySQL database connection"""
+    try:
+        conn = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="",
+            database="student_learning_db",
+            auth_plugin='mysql_native_password'
+        )
+        return conn
+    except Error as e:
+        print(f"Connection Error: {e}")
+        return None
+
+from functools import wraps
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            flash('Please log in first.', 'error')
+            return redirect(url_for('login'))
+        if session.get('user_role') != 'admin':
+            flash('Access denied. Administrator privileges required.', 'error')
+            return redirect(url_for('dashboard'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# =============================
+# ROUTES
+# =============================
+
+@app.route('/', methods=['GET', 'POST'])
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Login Page Route with MySQL Verification"""
+    if request.method == 'POST':
+        email = request.form.get('email')
+        password = request.form.get('password')
+        
+        conn = get_db_connection()
+        if conn and conn.is_connected():
+            try:
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute("SELECT * FROM users WHERE email = %s AND password = %s", (email, password))
+                user = cursor.fetchone()
+                cursor.close()
+                conn.close()
+
+                if user:
+                    session['logged_in'] = True
+                    session['user_id'] = user['id']
+                    session['user_email'] = user['email']
+                    session['user_name'] = user['name']
+                    session['user_role'] = user.get('role', 'student')
+                    
+                    if session['user_role'] == 'admin':
+                        flash('🛡️ Admin detected. Redirecting to Management Console...', 'success')
+                        return redirect(url_for('admin_dashboard'))
+                    return redirect(url_for('dashboard'))
+                else:
+                    flash('❌ Invalid email or password.', 'error')
+            except Error as e:
+                print(f"Login error: {e}")
+                flash('An error occurred during login.', 'error')
+        else:
+            flash('Database connection failed.', 'error')
+            
+    return render_template('index.html')
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    """Dedicated Admin Login Route"""
+    if request.method == 'POST':
+        email = request.form.get('email')
+        password = request.form.get('password')
+        
+        conn = get_db_connection()
+        if conn and conn.is_connected():
+            try:
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute("SELECT * FROM users WHERE email = %s AND password = %s AND role = 'admin'", (email, password))
+                user = cursor.fetchone()
+                cursor.close()
+                conn.close()
+
+                if user:
+                    session['logged_in'] = True
+                    session['user_id'] = user['id']
+                    session['user_email'] = user['email']
+                    session['user_name'] = user['name']
+                    session['user_role'] = 'admin'
+                    flash(f'🛡️ Administrator Authenticated: {user["name"]}', 'success')
+                    return redirect(url_for('admin_dashboard'))
+                else:
+                    flash('❌ Invalid admin credentials or access denied.', 'error')
+            except Error as e:
+                print(f"Admin login error: {e}")
+                flash('An error occurred during authentication.', 'error')
+        else:
+            flash('Database connection failed.', 'error')
+            
+    return render_template('admin_login.html')
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    """Registration Page Route"""
+    if request.method == 'POST':
+        name = request.form.get('name')
+        roll = request.form.get('roll')
+        email = request.form.get('email')
+        password = request.form.get('password')
+        interest = request.form.get('interest')
+
+        conn = get_db_connection()
+        if conn and conn.is_connected():
+            try:
+                cursor = conn.cursor()
+                # Check if user already exists
+                cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+                if cursor.fetchone():
+                    flash('❌ Email already registered.', 'error')
+                else:
+                    query = "INSERT INTO users (name, roll_number, email, password, interest, role) VALUES (%s, %s, %s, %s, %s, 'student')"
+                    cursor.execute(query, (name, roll, email, password, interest))
+                    conn.commit()
+                    flash('✅ Registration successful! Please login.', 'success')
+                    return redirect(url_for('login'))
+                cursor.close()
+                conn.close()
+            except Error as e:
+                print(f"Registration error: {e}")
+                flash('Registration failed.', 'error')
+        else:
+            flash('Database connection failed.', 'error')
+
+    return render_template('register.html')
+
+@app.route('/dashboard')
+def dashboard():
+    """Student Dashboard showing progress and recommendations"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    
+    user_id = session.get('user_id')
+    # Fetch user data and latest assessment
+    conn = get_db_connection()
+    user_data = None
+    latest_assessment = None
+    recommended_courses = []
+    stats = {
+        'total_assessments': 0,
+        'avg_marks': 0,
+        'avg_time': 0,
+        'latest_level': 'N/A'
+    }
+
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor(dictionary=True)
+            # User Info
+            cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+            user_data = cursor.fetchone()
+            
+            # Aggregate Stats
+            cursor.execute("SELECT COUNT(*) as total, AVG(marks) as avg_m, AVG(time_spent) as avg_t FROM assessments WHERE user_id = %s", (user_id,))
+            agg = cursor.fetchone()
+            if agg and agg['total'] > 0:
+                stats['total_assessments'] = agg['total']
+                stats['avg_marks'] = round(agg['avg_m'] or 0, 1)
+                stats['avg_time'] = round(agg['avg_t'] or 0, 1)
+
+            # Latest Assessment
+            cursor.execute("SELECT * FROM assessments WHERE user_id = %s ORDER BY created_at DESC LIMIT 1", (user_id,))
+            latest_assessment = cursor.fetchone()
+            if latest_assessment:
+                stats['latest_level'] = latest_assessment['predicted_level']
+            
+            # Recommended courses based on level
+            level = user_data.get('current_level', 'Beginner')
+            cursor.execute("SELECT * FROM courses WHERE level = %s", (level,))
+            recommended_courses = cursor.fetchall()
+
+            cursor.close()
+            conn.close()
+        except Error as e:
+            print(f"Dashboard error: {e}")
+
+    from datetime import datetime
+    now = datetime.now().strftime("%B %d, %Y | %H:%M")
+
+    return render_template('dashboard.html', 
+                         user=user_data, 
+                         assessment=latest_assessment, 
+                         stats=stats,
+                         now=now,
+                         courses=recommended_courses)
+
+@app.route('/assessment')
+def assessment():
+    """Assessment Form Route"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+        
+    return render_template('assessment.html')
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    flash('Successfully logged out.', 'success')
+    return redirect(url_for('login'))
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    """Handles Assessment Form Submission & AI Prediction"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    # 1. PREDICT LEVEL USING NEURAL NETWORK
+    marks = int(request.form.get('marks', 0))
+    time_spent = float(request.form.get('time_spent', 0))
+    subject = request.form.get('subject', 'General')
+    roll = request.form.get('roll', 'N/A')
+    
+    # Predict Interest Level automatically (AI-like logic)
+    # High if high marks or high study time
+    # Low if both are low
+    marks_int = int(marks)
+    time_float = float(time_spent)
+    
+    if marks_int >= 80 and time_float >= 4:
+        interest = "High"
+    elif marks_int < 40 and time_float < 2:
+        interest = "Low"
+    else:
+        interest = "Medium"
+        
+    # 0. HANDLE FILE UPLOAD
+    marksheet_filename = None
+    if 'marksheet' in request.files:
+        file = request.files['marksheet']
+        if file and file.filename != '' and allowed_file(file.filename):
+            from werkzeug.utils import secure_filename
+            marksheet_filename = secure_filename(f"{roll}_{file.filename}")
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], marksheet_filename))
+
+    # 1. AI PREDICTION
+    if model is None:
+        flash('❌ AI model not loaded. Cannot process request.', 'error')
+        return redirect(url_for('assessment'))
+        
+    # Prepare input data matching the original Streamlit logic
+    marks_val = int(marks)
+    time_val = float(time_spent)
+    input_data = np.array([[marks_val, interest_to_number(interest), time_val]])
+    input_scaled = scaler.transform(input_data)
+
+    # Get prediction
+    prediction = model.predict(input_scaled)
+    predicted_class = np.argmax(prediction[0])
+    confidence = np.max(prediction[0]) * 100
+
+    # Get level string
+    level = level_map.get(predicted_class, "Unknown")
+    # 2. GENERATE IMPROVEMENT AREAS & LEARNING PATH
+    recommendations = {
+        "Data Science": {
+            "low": ["Mathematics for Data Science (Linear Algebra, Calculus)", "Data Science Fundamentals", "Basics of Statistics"],
+            "med": ["Exploratory Data Analysis (EDA) with Pandas", "Data Visualization (Matplotlib, Seaborn)", "Intermediate Statistics & Probability"],
+            "high": ["Advanced Feature Engineering", "Statistical Modeling", "Big Data Analytics with Spark"]
+        },
+        "Machine Learning": {
+            "low": ["Basic Algorithms (Linear Regression, KNN)", "Scikit-Learn Fundamentals", "Data Preprocessing Techniques"],
+            "med": ["Supervised vs Unsupervised Learning Deep Dive", "Model Evaluation Metrics (Precision, Recall, F1)", "Cross-Validation & Regularization"],
+            "high": ["Neural Networks Architecture", "Ensemble Methods (XGBoost, Random Forest)", "MLOps & Model Deployment"]
+        },
+        "Deep Learning": {
+            "low": ["Neural Networks Basics", "TensorFlow/PyTorch Fundamentals", "Activation Functions"],
+            "med": ["Convolutional Neural Networks (CNN)", "Recurrent Neural Networks (RNN)", "Backpropagation & Gradient Descent"],
+            "high": ["Generative Adversarial Networks (GANs)", "Transformers & Attention Mechanisms", "Reinforcement Learning"]
+        },
+        "Big Data": {
+            "low": ["Introduction to Big Data Concepts", "Distributed Systems Basics", "HDFS Fundamentals"],
+            "med": ["MapReduce Algorithms", "Apache Spark DataFrames", "NoSQL Databases (MongoDB, Cassandra)"],
+            "high": ["Real-time Stream Processing (Kafka)", "Advanced Spark Optimization", "Data Lake Architecture"]
+        },
+        "Cloud Computing": {
+            "low": ["Cloud Basics & Service Models (IaaS, PaaS, SaaS)", "Virtualization Concepts", "Intro to AWS/Azure/GCP"],
+            "med": ["Cloud Storage Solutions", "Serverless Computing", "Containerization (Docker) & Orchestration"],
+            "high": ["Multi-Cloud Deployment", "Infrastructure as Code (Terraform)", "Cloud Security & Compliance"]
+        },
+        "Web Development": {
+            "low": ["HTML5 & CSS3 Basics", "JavaScript Fundamentals", "Responsive Web Design"],
+            "med": ["Frontend Frameworks (React/Vue/Angular)", "Backend Routing & APIs (Node.js/Django/Flask)", "Database Integration"],
+            "high": ["Full-Stack Application Deployment", "Microservices Architecture", "WebAssembly & Performance Optimization"]
+        },
+        "General": {
+            "low": ["Fundamental Programming", "Logical Reasoning", "Basic Computer Science"],
+            "med": ["Data Structures", "Web Development Basics", "Object-Oriented Programming"],
+            "high": ["Software Architecture", "Advanced Algorithms", "System Design"]
+        }
+    }
+
+    # Determine specific recommendations
+    subj_node = recommendations.get(subject, recommendations["General"])
+    if marks < 50:
+        improvement_areas = subj_node["low"]
+        next_steps = "Focus on foundational concepts. We recommend completing 2-3 introductory courses before retaking the assessment."
+    elif marks < 80:
+        improvement_areas = subj_node["med"]
+        next_steps = "You have a solid base. Now, practice with real-world datasets and focus on intermediate implementation details."
+    else:
+        improvement_areas = subj_node["high"]
+        next_steps = "Great job! You're ready for advanced specializations. Try building a complex project or contributing to open source."
+
+    # 3. SAVE TO MYSQL DATABASE
+    conn = get_db_connection()
+    user_id = session.get('user_id')
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor()
+            # Save assessment with recommendations
+            query = """
+                INSERT INTO assessments 
+                (user_id, subject, marks, interest, time_spent, predicted_level, confidence, improvement_areas, next_steps) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            cursor.execute(query, (user_id, subject, marks, interest, float(time_spent), level, float(confidence), 
+                                 ", ".join(improvement_areas), next_steps))
+            
+            # Update User Level
+            cursor.execute("UPDATE users SET current_level = %s WHERE id = %s", (level, user_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Error as e:
+            print(f"Error saving to database: {e}")
+            flash('⚠️ Prediction succeeded, but failed to save to database.', 'error')
+    else:
+        flash('⚠️ Database connection failed. Data not saved.', 'error')
+
+    # 4. FETCH RESOURCES FROM DB (Strictly filtered by level AND subject)
+    resources = []
+    conn = get_db_connection()
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor(dictionary=True)
+            # Find exact matches for both level and subject
+            query = "SELECT * FROM courses WHERE level = %s AND subject = %s"
+            cursor.execute(query, (level, subject))
+            all_resources = cursor.fetchall()
+            
+            # Deduplicate by URL
+            seen_urls = set()
+            for res in all_resources:
+                if res['url'] not in seen_urls:
+                    resources.append(res)
+                    seen_urls.add(res['url'])
+                    
+            # Fallback to 'General' subject if exact subject is empty in database
+            if not resources:
+                cursor.execute("SELECT * FROM courses WHERE level = %s AND subject = 'General'", (level,))
+                fallback_res = cursor.fetchall()
+                for fallback in fallback_res:
+                    if fallback['url'] not in seen_urls:
+                        resources.append(fallback)
+                        seen_urls.add(fallback['url'])
+
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"Resource fetch error: {e}")
+
+    # Render results page with the data
+    return render_template('result.html', 
+                          name=session.get('user_name'), 
+                          roll=roll, 
+                          subject=subject, 
+                          marks=marks, 
+                          interest=interest, 
+                          time_spent=time_spent, 
+                          level=level, 
+                          confidence=confidence,
+                          improvement_areas=improvement_areas,
+                          next_steps=next_steps,
+                          resources=resources)
+
+@app.route('/progress')
+def progress():
+    """Progress Tracking with Charts"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+        
+    user_id = session.get('user_id')
+    assessments_data = []
+    
+    conn = get_db_connection()
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM assessments WHERE user_id = %s ORDER BY created_at ASC", (user_id,))
+            assessments_data = cursor.fetchall()
+            cursor.close()
+            conn.close()
+        except Error as e:
+            print(f"Progress fetch error: {e}")
+            
+    return render_template('progress.html', assessments=assessments_data)
+
+@app.route('/resources')
+def resources_page():
+    """Learning Resources Library - Dynamic from Database"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+        
+    courses_data = []
+    conn = get_db_connection()
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM courses ORDER BY level, title")
+            courses_data = cursor.fetchall()
+            cursor.close()
+            conn.close()
+        except Error as e:
+            print(f"Resources fetch error: {e}")
+            
+    # Group courses by level and subject for better display
+    grouped_courses = {}
+    seen_urls = set()
+    for course in courses_data:
+        if course['url'] in seen_urls:
+            continue
+        seen_urls.add(course['url'])
+        
+        lvl = course['level']
+        subj = course.get('subject', 'General')
+        if lvl not in grouped_courses:
+            grouped_courses[lvl] = {}
+        if subj not in grouped_courses[lvl]:
+            grouped_courses[lvl][subj] = []
+        grouped_courses[lvl][subj].append(course)
+            
+    return render_template('resources.html', grouped_courses=grouped_courses)
+
+@app.route('/profile')
+def profile():
+    """User Profile Module"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    
+    user_id = session.get('user_id')
+    user_data = None
+    stats = {'total': 0, 'avg': 0}
+
+    conn = get_db_connection()
+    if conn and conn.is_connected():
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+        user_data = cursor.fetchone()
+        cursor.execute("SELECT COUNT(*) as total, AVG(marks) as avg_m FROM assessments WHERE user_id = %s", (user_id,))
+        agg = cursor.fetchone()
+        if agg:
+            stats['total'] = agg['total']
+            stats['avg'] = round(agg['avg_m'] or 0, 1)
+        cursor.close()
+        conn.close()
+
+    return render_template('profile.html', user=user_data, stats=stats)
+
+@app.route('/admin')
+@admin_required
+def admin_dashboard():
+    """Admin Dashboard showing system overview"""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor(dictionary=True)
+            
+            # Get stats
+            cursor.execute("SELECT COUNT(*) as count FROM users WHERE role = 'student'")
+            total_students = cursor.fetchone()['count']
+            
+            cursor.execute("SELECT COUNT(*) as count FROM assessments")
+            total_assessments = cursor.fetchone()['count']
+            
+            cursor.execute("SELECT * FROM assessments ORDER BY created_at DESC LIMIT 5")
+            recent_activity = cursor.fetchall()
+            
+            cursor.close()
+            conn.close()
+            
+            return render_template('admin_dashboard.html', 
+                                 total_students=total_students, 
+                                 total_assessments=total_assessments,
+                                 recent_activity=recent_activity)
+        except Error as e:
+            print(f"Error: {e}")
+            return "Internal Server Error", 500
+    return "Database Connection Failed", 500
+
+@app.route('/admin/resources', methods=['GET', 'POST'])
+@admin_required
+def admin_resources():
+    """Admin Resource Management"""
+    conn = get_db_connection()
+    if request.method == 'POST':
+        action = request.form.get('action')
+        title = request.form.get('title')
+        level = request.form.get('level')
+        res_type = request.form.get('type')
+        link = request.form.get('link')
+        subject = request.form.get('subject')
+        res_id = request.form.get('id')
+
+        if conn:
+            try:
+                cursor = conn.cursor()
+                if action == 'add':
+                    cursor.execute("INSERT INTO courses (title, level, url, description, subject) VALUES (%s, %s, %s, %s, %s)",
+                                 (title, level, link, "Added via Admin", subject))
+                    flash('Resource added successfully!', 'success')
+                elif action == 'edit':
+                    cursor.execute("UPDATE courses SET title=%s, level=%s, url=%s, subject=%s WHERE id=%s",
+                                 (title, level, link, subject, res_id))
+                    flash('Resource updated successfully!', 'success')
+                elif action == 'delete':
+                    cursor.execute("DELETE FROM courses WHERE id=%s", (res_id,))
+                    flash('Resource deleted successfully!', 'success')
+                
+                conn.commit()
+                cursor.close()
+                conn.close()
+            except Error as e:
+                flash(f'Error: {e}', 'error')
+        return redirect(url_for('admin_resources'))
+
+    resources_list = []
+    if conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM courses ORDER BY level, title")
+        resources_list = cursor.fetchall()
+        cursor.close()
+        conn.close()
+    return render_template('admin_resources.html', resources=resources_list)
+
+@app.route('/admin/students', methods=['GET', 'POST'])
+@admin_required
+def admin_students():
+    """Admin Student Management"""
+    conn = get_db_connection()
+    if request.method == 'POST':
+        action = request.form.get('action')
+        student_id = request.form.get('id')
+        name = request.form.get('name')
+        email = request.form.get('email')
+        roll = request.form.get('roll_number')
+
+        if conn:
+            try:
+                cursor = conn.cursor()
+                if action == 'edit':
+                    cursor.execute("UPDATE users SET name=%s, email=%s, roll_number=%s WHERE id=%s",
+                                 (name, email, roll, student_id))
+                    flash('Student updated successfully!', 'success')
+                elif action == 'delete':
+                    # Delete assessments first (foreign key)
+                    cursor.execute("DELETE FROM assessments WHERE user_id=%s", (student_id,))
+                    cursor.execute("DELETE FROM users WHERE id=%s", (student_id,))
+                    flash('Student and their records deleted!', 'warning')
+                
+                conn.commit()
+                cursor.close()
+                conn.close()
+            except Error as e:
+                flash(f'Error: {e}', 'error')
+        return redirect(url_for('admin_students'))
+
+    students_list = []
+    if conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM users WHERE role = 'student' ORDER BY name")
+        students_list = cursor.fetchall()
+        cursor.close()
+        conn.close()
+    return render_template('admin_students.html', students=students_list)
+
+@app.route('/records')
+@admin_required
+def records():
+    """Student Dashboard Route Fetching from MySQL"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+        
+    records_data = []
+    conn = get_db_connection()
+    if conn and conn.is_connected():
+        try:
+            cursor = conn.cursor(dictionary=True)
+            # Fetch assessments joined with user info
+            query = """
+                SELECT a.*, u.name, u.roll_number 
+                FROM assessments a 
+                JOIN users u ON a.user_id = u.id 
+                ORDER BY a.created_at DESC
+            """
+            cursor.execute(query)
+            records_data = cursor.fetchall()
+            cursor.close()
+            conn.close()
+        except Error as e:
+            print(f"Record fetch error: {e}")
+            flash('Error loading records.', 'error')
+            
+    return render_template('records.html', records=records_data)
+
+# =============================
+# MAIN EXECUTION
+# =============================
+if __name__ == '__main__':
+    # Run the Flask server
+    app.run(debug=True, port=5000)
+
+
+==================================================
+
+File: templates\admin_dashboard.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block title %}Admin Dashboard{% endblock %}
+
+{% block content %}
+<div class="container py-5">
+    <div class="row mb-4">
+        <div class="col">
+            <h1 class="display-4 fw-bold text-primary">Admin Monitoring Console</h1>
+            <p class="lead text-muted">Real-time System Overview & Student Activity Logs</p>
+        </div>
+    </div>
+
+    <!-- Stat Cards -->
+    <div class="row g-4 mb-5">
+        <div class="col-md-6 col-lg-3">
+            <div class="card h-100 border-0 shadow-sm rounded-4 overflow-hidden">
+                <div class="card-body p-4 bg-primary text-white">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="card-title mb-0">Total Students</h5>
+                        <i class="bi bi-people fs-1 opacity-50"></i>
+                    </div>
+                    <h2 class="display-5 fw-bold mb-0">{{ total_students }}</h2>
+                    <a href="{{ url_for('admin_students') }}" class="btn btn-light btn-sm rounded-pill px-3 mt-3">Manage Students</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6 col-lg-3">
+            <div class="card h-100 border-0 shadow-sm rounded-4 overflow-hidden">
+                <div class="card-body p-4 bg-warning text-white">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="card-title mb-0">Learning Resources</h5>
+                        <i class="bi bi-book fs-1 opacity-50"></i>
+                    </div>
+                    <p class="mb-0">Manage path materials</p>
+                    <a href="{{ url_for('admin_resources') }}" class="btn btn-light btn-sm rounded-pill px-3 mt-3">Manage Resources</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6 col-lg-3">
+            <div class="card h-100 border-0 shadow-sm rounded-4 overflow-hidden">
+                <div class="card-body p-4 bg-success text-white">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="card-title mb-0">Assessments</h5>
+                        <i class="bi bi-file-earmark-text fs-1 opacity-50"></i>
+                    </div>
+                    <h2 class="display-5 fw-bold mb-0">{{ total_assessments }}</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6 col-lg-3">
+            <div class="card h-100 border-0 shadow-sm rounded-4 overflow-hidden">
+                <div class="card-body p-4 bg-info text-white">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="card-title mb-0">Management</h5>
+                        <a href="{{ url_for('records') }}" class="btn btn-light btn-sm rounded-pill px-3">View All Records</a>
+                    </div>
+                    <p class="mb-0">Access detailed logs.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Activity -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card border-0 shadow-sm rounded-4">
+                <div class="card-header bg-white py-3 border-0">
+                    <h5 class="mb-0 fw-bold">Recent Activity</h5>
+                </div>
+                <div class="card-body p-4">
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Subject</th>
+                                    <th>Marks</th>
+                                    <th>Level</th>
+                                    <th>Time</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for activity in recent_activity %}
+                                <tr>
+                                    <td class="fw-bold">{{ activity.subject }}</td>
+                                    <td>{{ activity.marks }}%</td>
+                                    <td>
+                                        <span class="badge {% if activity.predicted_level == 'Beginner' %}bg-danger{% elif activity.predicted_level == 'Intermediate' %}bg-warning{% else %}bg-success{% endif %} rounded-pill">
+                                            {{ activity.predicted_level }}
+                                        </span>
+                                    </td>
+                                    <td class="text-muted small">{{ activity.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                </tr>
+                                {% endfor %}
+                                {% if not recent_activity %}
+                                <tr>
+                                    <td colspan="4" class="text-center py-4 text-muted italic">No recent activity found</td>
+                                </tr>
+                                {% endif %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+==================================================
+
+File: templates\admin_login.html
+--------------------------------------------------
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Login | AI Student Advisor</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --accent-admin: #ef4444; /* Red for Admin */
+            --glass-bg: rgba(255, 255, 255, 0.03);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            background-image: radial-gradient(at 0% 0%, rgba(239, 68, 68, 0.1) 0px, transparent 50%);
+            font-family: 'Outfit', sans-serif;
+            color: var(--text-primary);
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+        }
+
+        .login-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 24px;
+            padding: 3rem;
+            width: 100%;
+            max-width: 450px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.4);
+            animation: fadeIn 0.6s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .admin-icon {
+            width: 70px;
+            height: 70px;
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--accent-admin);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            margin: 0 auto 1.5rem;
+        }
+
+        .form-control {
+            background: rgba(0, 0, 0, 0.2) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            color: white !important;
+            border-radius: 12px;
+            padding: 0.8rem 1rem;
+        }
+
+        .form-control:focus {
+            border-color: var(--accent-admin) !important;
+            box-shadow: 0 0 0 0.25rem rgba(239, 68, 68, 0.25) !important;
+        }
+
+        .btn-admin {
+            background: var(--accent-admin);
+            color: white;
+            border: none;
+            padding: 0.8rem;
+            border-radius: 12px;
+            font-weight: 700;
+            width: 100%;
+            transition: all 0.3s;
+            margin-top: 1rem;
+        }
+
+        .btn-admin:hover {
+            background: #dc2626;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(239, 68, 68, 0.4);
+        }
+
+        .back-link {
+            text-align: center;
+            margin-top: 1.5rem;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .back-link a {
+            color: var(--text-primary);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .alert {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid var(--accent-admin);
+            color: white;
+            border-radius: 12px;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="admin-icon">
+            <i class="bi bi-shield-lock-fill"></i>
+        </div>
+        <h2 class="text-center fw-bold mb-1">Admin Access</h2>
+        <p class="text-center text-muted mb-4">Dedicated Control Center Login</p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert mb-4">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <form action="{{ url_for('admin_login') }}" method="POST">
+            <div class="mb-3">
+                <label class="form-label text-secondary small">ADMIN EMAIL</label>
+                <input type="email" name="email" class="form-control" placeholder="admin@college.edu" required autofocus>
+            </div>
+            <div class="mb-4">
+                <label class="form-label text-secondary small">SECURE PASSWORD</label>
+                <input type="password" name="password" class="form-control" placeholder="••••••••" required>
+            </div>
+            <button type="submit" class="btn btn-theme w-100 mt-2">AUTHENTICATE</button>
+        </form>
+
+        <div class="back-link">
+            <a href="{{ url_for('login') }}"><i class="bi bi-arrow-left me-1"></i> Back to Student Portal</a>
+        </div>
+    </div>
+</body>
+</html>
+
+
+==================================================
+
+File: templates\admin_resources.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block title %}Manage Resources{% endblock %}
+
+{% block content %}
+<div class="container py-5">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1 class="display-5 fw-bold text-primary">Manage Resources</h1>
+            <p class="text-muted">Add or modify learning materials and paths</p>
+        </div>
+        <button type="button" class="btn btn-primary rounded-pill px-4" data-bs-toggle="modal"
+            data-bs-target="#addResourceModal">
+            <i class="bi bi-plus-lg me-2"></i> Add New Resource
+        </button>
+    </div>
+
+    <!-- Resource Table -->
+    <div class="glass-card p-0 overflow-hidden shadow-sm">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="bg-light">
+                    <tr>
+                        <th class="ps-4">Title</th>
+                        <th>Subject</th>
+                        <th>Level</th>
+                        <th>Type</th>
+                        <th>Link</th>
+                        <th class="text-end pe-4" style="width: 220px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="border-0">
+                    {% for res in resources %}
+                    <tr class="align-middle">
+                        <td class="ps-4 fw-600">{{ res.title }}</td>
+                        <td>{{ res.subject }}</td>
+                        <td>
+                            <span
+                                class="badge {% if res.level == 'Beginner' %}badge-beginner{% elif res.level == 'Intermediate' %}badge-intermediate{% else %}badge-advanced{% endif %}">
+                                {{ res.level }}
+                            </span>
+                        </td>
+                        <td>{{ res.type or 'Other' }}</td>
+                        <td><a href="{{ res.link }}" target="_blank" class="text-truncate d-inline-block"
+                                style="max-width: 150px;">View Link</a></td>
+                        <td class="text-end pe-4">
+                            <div class="actions-cell">
+                                <button class="btn btn-outline-info btn-sm rounded-pill edit-btn px-3"
+                                    data-id="{{ res.id }}" data-title="{{ res.title }}" data-subject="{{ res.subject }}"
+                                    data-level="{{ res.level }}" data-type="{{ res.type }}" data-link="{{ res.link }}"
+                                    data-bs-toggle="modal" data-bs-target="#editResourceModal">
+                                    <i class="bi bi-pencil me-1"></i> Edit
+                                </button>
+                                <form action="{{ url_for('admin_resources') }}" method="POST" class="d-inline">
+                                    <input type="hidden" name="action" value="delete">
+                                    <input type="hidden" name="id" value="{{ res.id }}">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm rounded-pill px-3"
+                                        onclick="return confirm('Delete this resource?')">
+                                        <i class="bi bi-trash me-1"></i> Delete
+                                    </button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Add Modal -->
+<div class="modal fade" id="addResourceModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content glass-card p-0 border-0">
+            <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title fw-bold">Add New Learning Resource</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="{{ url_for('admin_resources') }}" method="POST" class="p-4">
+                <input type="hidden" name="action" value="add">
+                <div class="mb-3">
+                    <label class="form-label">Title</label>
+                    <input type="text" name="title" required placeholder="e.g. Intro to Applied ML">
+                </div>
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Subject</label>
+                        <select class="form-select" name="subject" required>
+                            <option>Data Science</option>
+                            <option>Machine Learning</option>
+                            <option>Big Data</option>
+                            <option>Deep Learning</option>
+                            <option>Web Development</option>
+                            <option>Cloud Computing</option>
+                            <option>General</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Level</label>
+                        <select name="level">
+                            <option>Beginner</option>
+                            <option>Intermediate</option>
+                            <option>Advanced</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Type</label>
+                    <input type="text" name="type" placeholder="e.g. Video, Course, PDF">
+                </div>
+                <div class="mb-4">
+                    <label class="form-label">URL Link</label>
+                    <input type="url" name="link" required placeholder="https://...">
+                </div>
+                <button type="submit" class="btn btn-primary w-100">Add Resource</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal fade" id="editResourceModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content glass-card p-0 border-0">
+            <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title fw-bold">Edit Learning Resource</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="{{ url_for('admin_resources') }}" method="POST" class="p-4" id="editForm">
+                <input type="hidden" name="action" value="edit">
+                <input type="hidden" name="id" id="edit-id">
+                <div class="mb-3">
+                    <label class="form-label">Title</label>
+                    <input type="text" name="title" id="edit-title" required>
+                </div>
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Subject</label>
+                        <select class="form-select" name="subject" id="edit-subject" required>
+                            <option>Data Science</option>
+                            <option>Machine Learning</option>
+                            <option>Big Data</option>
+                            <option>Deep Learning</option>
+                            <option>Web Development</option>
+                            <option>Cloud Computing</option>
+                            <option>General</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Level</label>
+                        <select name="level" id="edit-level">
+                            <option>Beginner</option>
+                            <option>Intermediate</option>
+                            <option>Advanced</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Type</label>
+                    <input type="text" name="type" id="edit-type">
+                </div>
+                <div class="mb-4">
+                    <label class="form-label">URL Link</label>
+                    <input type="url" name="link" id="edit-link" required>
+                </div>
+                <button type="submit" class="btn btn-primary w-100">Update Resource</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.querySelectorAll('.edit-btn').forEach(btn => {
+        btn.addEventListener('click', function   () {
+            document.getElementById('edit-id').value = this.dataset.id;
+            document.getElementById('edit-title').value = this.dataset.title;
+            document.getElementById('edit-subject').value = this.dataset.subject;
+            document.getElementById('edit-level').value = this.dataset.level;
+            document.getElementById('edit-type').value = this.dataset.type;
+            document.getElementById('edit-link').value = this.dataset.link;
+        });
+    });
+</script>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+<style>
+    .fw-600 {
+        font-weight: 600;
+    }
+
+    .modal-content.glass-card {
+        background: #1e293b;
+    }
+
+    .btn-close-white {
+        filter: invert(1) grayscale(100%) brightness(200%);
+    }
+</style>
+{% endblock %}
+
+==================================================
+
+File: templates\admin_students.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block title %}Manage Students{% endblock %}
+
+{% block content %}
+<div class="container py-5">
+    <div class="mb-4">
+        <h1 class="display-5 fw-bold text-primary">Manage Students</h1>
+        <p class="text-muted">View, edit, or remove student accounts</p>
+    </div>
+
+    <!-- Student Table -->
+    <div class="glass-card p-0 overflow-hidden shadow-sm">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="bg-light">
+                    <tr>
+                        <th class="ps-4">Name</th>
+                        <th>Roll Number</th>
+                        <th>Email</th>
+                        <th>Level</th>
+                        <th class="text-end pe-4" style="width: 220px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="border-0">
+                    {% for student in students %}
+                    <tr class="align-middle">
+                        <td class="ps-4">
+                            <div class="d-flex align-items-center">
+                                <div class="avatar-sm me-3 bg-secondary rounded-circle d-flex align-items-center justify-content-center text-white" style="width: 32px; height: 32px;">
+                                    {{ student.name[0] | upper }}
+                                </div>
+                                <span class="fw-600">{{ student.name }}</span>
+                            </div>
+                        </td>
+                        <td>{{ student.roll_number }}</td>
+                        <td>{{ student.email }}</td>
+                        <td>
+                             <span class="badge {% if student.current_level == 'Beginner' %}badge-beginner{% elif student.current_level == 'Intermediate' %}badge-intermediate{% else %}badge-advanced{% endif %}">
+                                {{ student.current_level }}
+                            </span>
+                        </td>
+                        <td class="text-end pe-4">
+                            <div class="actions-cell">
+                                <button class="btn btn-outline-info btn-sm rounded-pill edit-btn px-3" 
+                                        data-id="{{ student.id }}" data-name="{{ student.name }}" 
+                                        data-email="{{ student.email }}" data-roll="{{ student.roll_number }}"
+                                        data-bs-toggle="modal" data-bs-target="#editStudentModal">
+                                    <i class="bi bi-pencil-square me-1"></i> Edit
+                                </button>
+                                <form action="{{ url_for('admin_students') }}" method="POST" class="d-inline">
+                                    <input type="hidden" name="action" value="delete">
+                                    <input type="hidden" name="id" value="{{ student.id }}">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm rounded-pill px-3" onclick="return confirm('Delete this student and all their records?')">
+                                        <i class="bi bi-trash3 me-1"></i> Delete
+                                    </button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal fade" id="editStudentModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content glass-card p-0 border-0">
+            <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title fw-bold">Edit Student Details</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="{{ url_for('admin_students') }}" method="POST" class="p-4">
+                <input type="hidden" name="action" value="edit">
+                <input type="hidden" name="id" id="edit-id">
+                <div class="mb-3">
+                    <label class="form-label">Full Name</label>
+                    <input type="text" name="name" id="edit-name" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Roll Number</label>
+                    <input type="text" name="roll_number" id="edit-roll" required>
+                </div>
+                <div class="mb-4">
+                    <label class="form-label">Email Address</label>
+                    <input type="email" name="email" id="edit-email" required>
+                </div>
+                <button type="submit" class="btn btn-primary w-100">Update Profile</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.querySelectorAll('.edit-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.getElementById('edit-id').value = this.dataset.id;
+            document.getElementById('edit-name').value = this.dataset.name;
+            document.getElementById('edit-email').value = this.dataset.email;
+            document.getElementById('edit-roll').value = this.dataset.roll;
+        });
+    });
+</script>
+
+<style>
+    .fw-600 { font-weight: 600; }
+    .modal-content.glass-card { background: #1e293b; }
+</style>
+{% endblock %}
+
+
+==================================================
+
+File: templates\assessment.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="animate-fadeIn">
+    <h1 style="margin-bottom: 0.5rem;">📝 Student Assessment</h1>
+    <p style="color: var(--text-secondary); margin-bottom: 2rem;">Help our AI understand your performance to generate a personalized learning path.</p>
+
+    <form action="/predict" method="POST" enctype="multipart/form-data">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
+            <!-- Part A: Student Information -->
+            <div class="glass-card">
+                <h3 style="margin-bottom: 1.5rem; color: var(--accent-primary);">👤 Part A: Student Information</h3>
+                
+                <div class="form-group">
+                    <label>Full Name</label>
+                    <input type="text" name="name" value="{{ session.user_name }}" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Roll Number</label>
+                    <input type="text" name="roll" placeholder="e.g. MCA202401" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Subject / Course Selection</label>
+                    <select name="subject" required>
+                        <option value="Data Science">Data Science</option>
+                        <option value="Machine Learning">Machine Learning</option>
+                        <option value="Big Data">Big Data</option>
+                        <option value="Deep Learning">Deep Learning</option>
+                        <option value="Web Development">Web Development</option>
+                        <option value="Cloud Computing">Cloud Computing</option>
+                    </select>
+                </div>
+
+                <div class="form-group" style="margin-top: 2rem;">
+                    <label>Optional: Upload Marksheet (PDF/Image)</label>
+                    <input type="file" name="marksheet" style="padding: 10px; background: rgba(255,255,255,0.05);">
+                    <small style="color: var(--text-secondary); display: block; margin-top: 5px;">Upload your academic record for deeper analysis.</small>
+                </div>
+            </div>
+
+            <!-- Part B: Performance Metrics -->
+            <div class="glass-card">
+                <h3 style="margin-bottom: 1.5rem; color: var(--accent-secondary);">📊 Part B: Performance Metrics</h3>
+                
+                <div class="form-group">
+                    <label style="display: flex; justify-content: space-between;">
+                        <span>Marks Obtained (0-100)</span>
+                        <span id="marks_val" style="color: var(--accent-primary); font-weight: bold;">50</span>
+                    </label>
+                    <input type="range" name="marks" min="0" max="100" step="1" value="50" oninput="document.getElementById('marks_val').innerText = this.value" style="background: rgba(56, 189, 248, 0.2);">
+                </div>
+
+                <div class="form-group">
+                    <label style="display: flex; justify-content: space-between;">
+                        <span>Daily Study Time (Hours)</span>
+                        <span id="time_val" style="color: var(--accent-secondary); font-weight: bold;">4</span>
+                    </label>
+                    <input type="range" name="time_spent" min="0.5" max="8" step="0.5" value="4" oninput="document.getElementById('time_val').innerText = this.value" style="background: rgba(129, 140, 248, 0.2);">
+                </div>
+
+                <div style="background: rgba(255,255,255,0.03); padding: 1rem; border-radius: 12px; margin-top: 2rem;">
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin: 0;">
+                        🤖 <span style="color: var(--accent-secondary); font-weight: 600;">AI Auto-Detection:</span> Our system will automatically evaluate your interest level based on your performance metrics.
+                    </p>
+                </div>
+
+                <div style="margin-top: 3rem; text-align: center;">
+                    <button type="submit" class="btn btn-full" style="padding: 1.2rem;">
+                        🤖 Generate Learning Path Recommendation
+                    </button>
+                    <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 15px;">
+                        Our AI will analyze your inputs using Machine Learning & Neural Networks.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+
+==================================================
+
+File: templates\dashboard.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="animate-fadeIn">
+    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2.5rem;">
+        <div>
+            <h1 style="font-size: 2.5rem; margin-bottom: 0.5rem;">👋 Welcome, {{ user.name }}!</h1>
+            <p style="color: var(--text-secondary);">Here's a summary of your academic progress and AI recommendations.</p>
+        </div>
+        <div style="text-align: right;">
+            <div style="font-size: 1.1rem; font-weight: 600;">{{ now }}</div>
+            <div style="color: var(--accent-primary); font-size: 0.9rem;">Student Portal Active</div>
+        </div>
+    </div>
+
+    <!-- Quick Stats Row -->
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.5rem; margin-bottom: 3rem;">
+        <div class="glass-card" style="padding: 1.5rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 10px;">TOTAL ASSESSMENTS</div>
+            <div style="font-size: 2rem; font-weight: 700;">{{ stats.total_assessments }}</div>
+        </div>
+        <div class="glass-card" style="padding: 1.5rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 10px;">AVERAGE MARKS</div>
+            <div style="font-size: 2rem; font-weight: 700; color: var(--accent-primary);">{{ stats.avg_marks }}%</div>
+        </div>
+        <div class="glass-card" style="padding: 1.5rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 10px;">STUDY TIME (AVG)</div>
+            <div style="font-size: 2rem; font-weight: 700; color: var(--accent-secondary);">{{ stats.avg_time }}h/day</div>
+        </div>
+        <div class="glass-card" style="padding: 1.5rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 10px;">LATEST LEVEL</div>
+            <div>
+                <span class="badge badge-{{ stats.latest_level|lower if stats.latest_level != 'N/A' else 'beginner' }}" style="font-size: 1.2rem; padding: 8px 16px;">
+                    {{ stats.latest_level }}
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 2rem;">
+        <!-- Assessment Summary -->
+        <div class="glass-card">
+            <h3 style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 10px;">📊 Latest Assessment</h3>
+            {% if assessment %}
+                <div style="background: rgba(255,255,255,0.02); padding: 1.5rem; border-radius: 16px; border: 1px solid rgba(255,255,255,0.05);">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 1rem;">
+                        <span style="color: var(--text-secondary);">Subject:</span>
+                        <span style="font-weight: 600;">{{ assessment.subject }}</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 1rem;">
+                        <span style="color: var(--text-secondary);">Score:</span>
+                        <span style="font-weight: 600; color: var(--accent-primary);">{{ assessment.marks }}%</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 1.5rem;">
+                        <span style="color: var(--text-secondary);">Level:</span>
+                        <span class="badge {{ 'badge-beginner' if assessment.predicted_level == 'Beginner' else 'badge-intermediate' if assessment.predicted_level == 'Intermediate' else 'badge-advanced' }}">
+                            {{ assessment.predicted_level }}
+                        </span>
+                    </div>
+
+                    <div style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 1.5rem; margin-top: 1rem;">
+                        <h4 style="font-size: 0.9rem; color: var(--accent-secondary); margin-bottom: 1rem; text-transform: uppercase;">🚀 Roadmap for Growth</h4>
+                        <p style="font-size: 0.85rem; line-height: 1.5; color: var(--text-secondary); margin-bottom: 1rem;">
+                            {{ assessment.next_steps if assessment.next_steps else "Keep practicing to see personalized steps!" }}
+                        </p>
+                        {% if assessment.improvement_areas %}
+                        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                            {% for area in assessment.improvement_areas.split(', ') %}
+                            <span style="font-size: 0.75rem; background: rgba(56, 189, 248, 0.1); color: var(--accent-primary); padding: 4px 10px; border-radius: 6px;">
+                                {{ area }}
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <div style="margin-top: 2rem;">
+                        <a href="/progress" class="btn" style="width: 100%;">Detailed Progress</a>
+                    </div>
+                </div>
+            {% else %}
+                <div style="text-align: center; padding: 3rem 0;">
+                    <p style="color: var(--text-secondary); margin-bottom: 1.5rem;">No assessments recorded yet.</p>
+                    <a href="/assessment" class="btn">Start Your First Test</a>
+                </div>
+            {% endif %}
+        </div>
+
+        <!-- Key Features / Quick Links -->
+        <div class="glass-card">
+            <h3 style="margin-bottom: 1.5rem;">✨ Key Features</h3>
+            <div style="display: flex; flex-direction: column; gap: 1rem;">
+                <div style="display: flex; gap: 12px; align-items: flex-start;">
+                    <div style="background: rgba(56, 189, 248, 0.1); padding: 8px; border-radius: 8px;">🤖</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 0.95rem;">AI Analysis</div>
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">Deep learning powered predictions.</div>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 12px; align-items: flex-start;">
+                    <div style="background: rgba(129, 140, 248, 0.1); padding: 8px; border-radius: 8px;">🎯</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 0.95rem;">Personalized Path</div>
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">Tailored recommendations for you.</div>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 12px; align-items: flex-start;">
+                    <div style="background: rgba(16, 185, 129, 0.1); padding: 8px; border-radius: 8px;">📈</div>
+                    <div>
+                        <div style="font-weight: 600; font-size: 0.95rem;">Progress Tracking</div>
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">Visual trends of your learning journey.</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 1.5rem;">
+                <a href="/assessment" class="btn btn-full" style="margin-bottom: 10px;">📝 New Assessment</a>
+                <a href="/resources" class="btn btn-full" style="background: transparent; border: 1px solid var(--accent-primary); color: var(--accent-primary);">📚 Browse Resources</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+==================================================
+
+File: templates\index.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block content %}
+<div style="display: flex; justify-content: center; align-items: center; min-height: 80vh;">
+    <div class="glass-card animate-fadeIn" style="width: 100%; max-width: 450px;">
+        <div style="text-align: center; margin-bottom: 2.5rem;">
+            <div style="font-size: 3rem; margin-bottom: 1rem;">🎓</div>
+            <h1 style="color: var(--accent-primary); margin-bottom: 0.5rem;">Student Login</h1>
+            <p style="color: var(--text-secondary);">Access your personalized learning path.</p>
+        </div>
+
+        <form action="/login" method="POST">
+            <div class="form-group">
+                <label>Email Address</label>
+                <input type="email" name="email" placeholder="student@college.edu" required>
+            </div>
+            
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" name="password" placeholder="••••••••" required>
+            </div>
+            
+            <button type="submit" class="btn btn-theme w-100" style="margin-top: 1rem;">
+                Sign In to Dashboard
+            </button>
+        </form>
+        
+        <div style="text-align: center; margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 1.5rem;">
+            <p><span style="color: var(--text-secondary);">New student?</span>
+            <a href="/register" style="color: var(--accent-primary); text-decoration: none; font-weight: 600;"> Create Account</a></p>
+            
+            <div style="margin-top: 1rem; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 1rem;">
+                <p style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; letter-spacing: 0.05rem;">PORTAL MANAGEMENT</p>
+                <a href="/admin/login" style="color: #ef4444; text-decoration: none; font-weight: 700; font-size: 0.85rem;">
+                    🛡️ Administrator Access
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+==================================================
+
+File: templates\layout.html
+--------------------------------------------------
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Student Advisor | Learning Path</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --sidebar-bg: rgba(30, 41, 59, 0.7);
+            --glass-bg: rgba(255, 255, 255, 0.03);
+            --accent-primary: #38bdf8;
+            --accent-secondary: #818cf8;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --beginner-red: #ef4444;
+            --intermediate-yellow: #f59e0b;
+            --advanced-green: #10b981;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.1) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(129, 140, 248, 0.1) 0px, transparent 50%);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+        }
+
+        /* Sidebar Navigation */
+        .sidebar {
+            width: 280px;
+            background: var(--sidebar-bg);
+            backdrop-filter: blur(20px);
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+            padding: 2rem 1.5rem;
+            height: 100vh;
+            position: fixed;
+            z-index: 1000;
+        }
+
+        .sidebar-logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent-primary);
+            margin-bottom: 3rem;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-decoration: none;
+        }
+
+        .nav-section {
+            margin-bottom: 2rem;
+        }
+
+        .nav-title {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1rem;
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+            padding-left: 0.75rem;
+        }
+
+        .nav-link {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 0.85rem 1rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            margin-bottom: 0.5rem;
+        }
+
+        .nav-link:hover, .nav-link.active {
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--accent-primary);
+            transform: translateX(5px);
+        }
+
+        .sidebar-footer {
+            margin-top: auto;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            padding-top: 2rem;
+        }
+
+        .user-mini-profile {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 1.5rem;
+        }
+
+        .avatar {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+        }
+
+        /* Main Content */
+        .main-content {
+            margin-left: 280px;
+            flex: 1;
+            padding: 2rem 3rem;
+            max-width: 1400px;
+            transition: margin-left 0.3s ease;
+        }
+
+        .no-sidebar {
+            margin-left: 0 !important;
+        }
+
+        /* Essential UI components */
+        .glass-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 24px;
+            padding: 2rem;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+        }
+
+        /* Use .btn-theme for primary large buttons */
+        .btn-theme {
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            color: white !important;
+            border: none;
+            padding: 0.85rem 1.75rem;
+            border-radius: 12px;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-theme:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
+            opacity: 0.95;
+        }
+
+        /* Support standard Bootstrap button sizes and states */
+        .btn-sm {
+            padding: 0.25rem 0.6rem !important;
+            font-size: 0.8rem !important;
+            border-radius: 6px !important;
+            display: inline-flex !important;
+            align-items: center;
+            justify-content: center;
+            height: auto !important;
+            width: auto !important;
+        }
+        
+        /* Standard Bootstrap button overrides for dark theme */
+        .btn-outline-danger {
+            color: #ef4444 !important;
+            border-color: #ef4444 !important;
+            background: transparent !important;
+        }
+        .btn-outline-danger:hover {
+            background-color: #ef4444 !important;
+            color: white !important;
+        }
+
+        .btn-outline-info {
+            color: #38bdf8 !important;
+            border-color: #38bdf8 !important;
+            background: transparent !important;
+        }
+        .btn-outline-info:hover {
+            background-color: #38bdf8 !important;
+            color: white !important;
+        }
+
+        .actions-cell {
+            display: flex !important;
+            gap: 10px !important;
+            justify-content: flex-end !important;
+            white-space: nowrap !important;
+        }
+
+        .actions-cell form { display: inline; }
+
+        .form-group { margin-bottom: 1.5rem; }
+        label { display: block; margin-bottom: 0.6rem; color: var(--text-secondary); font-size: 0.9rem; }
+        input, select, textarea {
+            width: 100%; padding: 0.85rem 1rem; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px; color: white; outline: none; transition: border-color 0.3s;
+        }
+        input:focus { border-color: var(--accent-primary); }
+
+        /* Level Badges */
+        .badge { padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
+        .badge-beginner { background: rgba(239, 68, 68, 0.2); color: var(--beginner-red); }
+        .badge-intermediate { background: rgba(245, 158, 11, 0.2); color: var(--intermediate-yellow); }
+        .badge-advanced { background: rgba(16, 185, 129, 0.2); color: var(--advanced-green); }
+
+        /* Animation */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fadeIn { animation: fadeIn 0.5s ease forwards; }
+
+        /* Flash Messages */
+        .flash-messages {
+            position: fixed; top: 2rem; right: 2rem; z-index: 2000;
+            display: flex; flex-direction: column; gap: 10px;
+        }
+        .alert {
+            padding: 1rem 1.5rem; border-radius: 12px; backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1); color: white;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2); animation: fadeIn 0.3s ease;
+        }
+        .alert-success { background: rgba(16, 185, 129, 0.8); }
+        .alert-error { background: rgba(239, 68, 68, 0.8); }
+
+    </style>
+</head>
+<body>
+
+    {% if session.logged_in %}
+    <div class="sidebar">
+        <a href="/dashboard" class="sidebar-logo">
+            <span>🗺️ AI Advisor</span>
+        </a>
+
+        <div class="nav-section">
+            <h3 class="nav-title">Navigation</h3>
+            {% if session.get('user_role') == 'student' %}
+            <a href="/dashboard" class="nav-link">🏠 Home</a>
+            <a href="/assessment" class="nav-link">📝 Assessment</a>
+            <a href="/progress" class="nav-link">📊 My Progress</a>
+            <a href="/resources" class="nav-link">📚 Resources</a>
+            <a href="/profile" class="nav-link">👤 Profile</a>
+            {% endif %}
+            {% if session.get('user_role') == 'admin' %}
+            <a href="/admin" class="nav-link" style="color: var(--accent-secondary);">🛡️ Admin Dashboard</a>
+            <a href="/admin/students" class="nav-link">👥 Manage Students</a>
+            <a href="/admin/resources" class="nav-link">📚 Manage Resources</a>
+            <a href="/records" class="nav-link">📁 All Assessment Records</a>
+            {% endif %}
+        </div>
+
+        <div class="sidebar-footer">
+            <div class="user-mini-profile">
+                <div class="avatar">{{ session.user_name[0] | upper }}</div>
+                <div>
+                    <div style="font-size: 0.9rem; font-weight: 600;">{{ session.user_name }}</div>
+                    <div style="font-size: 0.75rem; color: var(--text-secondary);">{{ session.user_email }}</div>
+                </div>
+            </div>
+            <a href="/logout" class="nav-link" style="color: var(--beginner-red);">🚪 Logout</a>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="main-content {{ 'no-sidebar' if not session.logged_in else '' }}">
+        <div class="flash-messages">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ 'success' if category == 'success' else 'error' }}">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+        </div>
+
+        {% block content %}{% endblock %}
+    </div>
+
+    <script>
+        // Auto-hide flash messages
+        setTimeout(() => {
+            const alerts = document.querySelectorAll('.alert');
+            alerts.forEach(alert => {
+                alert.style.opacity = '0';
+                setTimeout(() => alert.remove(), 500);
+            });
+        }, 3000);
+    </script>
+</body>
+</html>
+
+
+==================================================
+
+File: templates\profile.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="animate-fadeIn">
+    <h1 style="margin-bottom: 2rem;">👤 User Profile</h1>
+
+    <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 2rem;">
+        <!-- Account Info -->
+        <div class="glass-card">
+            <div style="text-align: center; margin-bottom: 2rem;">
+                <div class="avatar" style="width: 80px; height: 80px; font-size: 2rem; margin: 0 auto 1.5rem;">{{ user.name[0] | upper }}</div>
+                <h2>{{ user.name }}</h2>
+                <p style="color: var(--accent-primary);">{{ user.roll_number }}</p>
+            </div>
+
+            <div style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 1.5rem;">
+                <div class="form-group">
+                    <label>Email Address</label>
+                    <div style="padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px;">{{ user.email }}</div>
+                </div>
+                <div class="form-group">
+                    <label>Primary Interest</label>
+                    <div style="padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px;">{{ user.interest }}</div>
+                </div>
+            </div>
+            
+            <a href="/logout" class="btn btn-full" style="background: rgba(239, 68, 68, 0.1); color: var(--beginner-red); border: 1px solid var(--beginner-red); margin-top: 1rem;">
+                Sign Out
+            </a>
+        </div>
+
+        <!-- Profile Statistics -->
+        <div class="glass-card">
+            <h3 style="margin-bottom: 2rem;">📊 Academic Performance Stats</h3>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                <div style="background: rgba(255,255,255,0.03); padding: 2rem; border-radius: 20px; text-align: center;">
+                    <div style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.5rem;">Total Assessments</div>
+                    <div style="font-size: 2.5rem; font-weight: 700;">{{ stats.total }}</div>
+                </div>
+                <div style="background: rgba(255,255,255,0.03); padding: 2rem; border-radius: 20px; text-align: center;">
+                    <div style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.5rem;">Average Marks</div>
+                    <div style="font-size: 2.5rem; font-weight: 700; color: var(--accent-primary);">{{ stats.avg }}%</div>
+                </div>
+            </div>
+
+            <div style="margin-top: 2rem;">
+                <h3>🗺️ Current Learning Status</h3>
+                <div style="margin-top: 1rem; padding: 1.5rem; background: rgba(255,255,255,0.02); border-radius: 16px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-weight: 600;">{{ user.current_level or 'Not Started' }}</div>
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">Last updated based on your recent assessment</div>
+                    </div>
+                    {% if user.current_level %}
+                        <span class="badge badge-{{ user.current_level|lower }}">{{ user.current_level }}</span>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div style="margin-top: 2rem; display: flex; gap: 10px;">
+                <a href="/progress" class="btn">📈 View History</a>
+                <a href="/assessment" class="btn" style="background: var(--accent-secondary);">📝 Take Assessment</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+==================================================
+
+File: templates\progress.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="animate-fadeIn">
+    <h1 style="margin-bottom: 0.5rem;">📈 Progress Tracking</h1>
+    <p style="color: var(--text-secondary); margin-bottom: 2rem;">Visualize your academic growth and performance trends over time.</p>
+
+    {% if assessments %}
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px;">
+        <!-- Marks Trend Chart -->
+        <div class="glass-card">
+            <h3>📊 Marks Progression</h3>
+            <canvas id="marksChart" style="margin-top: 20px; max-height: 300px;"></canvas>
+        </div>
+        <!-- Study Time Trend Chart -->
+        <div class="glass-card">
+            <h3>⏱ Study Time Progression</h3>
+            <canvas id="timeChart" style="margin-top: 20px; max-height: 300px;"></canvas>
+        </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-bottom: 30px;">
+        <!-- Historical Table -->
+        <div class="glass-card">
+            <h3>📋 Assessment History</h3>
+            <div style="overflow-x: auto; margin-top: 20px;">
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead>
+                        <tr style="text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1);">
+                            <th style="padding: 12px;">Date</th>
+                            <th style="padding: 12px;">Subject</th>
+                            <th style="padding: 12px;">Marks</th>
+                            <th style="padding: 12px;">Interest</th>
+                            <th style="padding: 12px;">Level</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for a in assessments | reverse %}
+                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                            <td style="padding: 12px; font-size: 0.9rem;">{{ a.created_at.strftime('%Y-%m-%d') }}</td>
+                            <td style="padding: 12px; font-size: 0.9rem;">{{ a.subject }}</td>
+                            <td style="padding: 12px; font-weight: 600; color: var(--accent-primary);">{{ a.marks }}%</td>
+                            <td style="padding: 12px; font-size: 0.9rem;">{{ a.interest }}</td>
+                            <td style="padding: 12px;">
+                                <span class="badge badge-{{ a.predicted_level|lower }}">{{ a.predicted_level }}</span>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Distribution -->
+        <div class="glass-card">
+            <h3>🎯 Level Distribution</h3>
+            <canvas id="levelChart" style="margin-top: 20px; max-height: 300px;"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const labels = [{% for a in assessments %}"{{ a.created_at.strftime('%m-%d') }}",{% endfor %}];
+        const marksData = [{% for a in assessments %}{{ a.marks }},{% endfor %}];
+        const timeData = [{% for a in assessments %}{{ a.time_spent }},{% endfor %}];
+        
+        // Marks Chart
+        new Chart(document.getElementById('marksChart'), {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Marks (%)',
+                    data: marksData,
+                    borderColor: '#38bdf8',
+                    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: { y: { min: 0, max: 100, grid: { color: 'rgba(255,255,255,0.05)' } } }
+            }
+        });
+
+        // Time Chart
+        new Chart(document.getElementById('timeChart'), {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Study Hours',
+                    data: timeData,
+                    borderColor: '#818cf8',
+                    backgroundColor: 'rgba(129, 140, 248, 0.1)',
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: { y: { min: 0, max: 8, grid: { color: 'rgba(255,255,255,0.05)' } } }
+            }
+        });
+
+        // Level Distribution Chart
+        const levels = [{% for a in assessments %}"{{ a.predicted_level }}",{% endfor %}];
+        const counts = { 'Beginner': 0, 'Intermediate': 0, 'Advanced': 0 };
+        levels.forEach(l => counts[l]++);
+
+        new Chart(document.getElementById('levelChart'), {
+            type: 'doughnut',
+            data: {
+                labels: ['Beginner', 'Intermediate', 'Advanced'],
+                datasets: [{
+                    data: [counts['Beginner'], counts['Intermediate'], counts['Advanced']],
+                    backgroundColor: ['#ef4444', '#f59e0b', '#10b981'],
+                    borderWidth: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8' } } }
+            }
+        });
+    </script>
+    {% else %}
+    <div class="glass-card" style="text-align: center; padding: 5rem;">
+        <h2 style="color: var(--text-secondary); margin-bottom: 2rem;">No assessments recorded yet.</h2>
+        <a href="/assessment" class="btn">Start Your First Assessment</a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+
+==================================================
+
+File: templates\quiz.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="glass-card animate-fade-up">
+    <h2>🧠 AI Knowledge Assessment</h2>
+    <p>Please answer the following questions to help our AI determine your current learning level.</p>
+
+    <form action="/submit_quiz" method="POST">
+        {% for q in questions %}
+        <div style="margin-bottom: 30px; padding: 20px; background: rgba(255,255,255,0.05); border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
+            <h4>Q{{ loop.index }}: {{ q.question_text }}</h4>
+            <div style="margin-top: 15px;">
+                <label style="display: block; cursor: pointer; padding: 10px; border-radius: 8px; transition: background 0.3s;" onmouseover="this.style.background='rgba(0,210,255,0.1)'" onmouseout="this.style.background='transparent'">
+                    <input type="radio" name="q_{{ q.id }}" value="A" required> A) {{ q.option_a }}
+                </label>
+                <label style="display: block; cursor: pointer; padding: 10px; border-radius: 8px; transition: background 0.3s;" onmouseover="this.style.background='rgba(0,210,255,0.1)'" onmouseout="this.style.background='transparent'">
+                    <input type="radio" name="q_{{ q.id }}" value="B"> B) {{ q.option_b }}
+                </label>
+                <label style="display: block; cursor: pointer; padding: 10px; border-radius: 8px; transition: background 0.3s;" onmouseover="this.style.background='rgba(0,210,255,0.1)'" onmouseout="this.style.background='transparent'">
+                    <input type="radio" name="q_{{ q.id }}" value="C"> C) {{ q.option_c }}
+                </label>
+                <label style="display: block; cursor: pointer; padding: 10px; border-radius: 8px; transition: background 0.3s;" onmouseover="this.style.background='rgba(0,210,255,0.1)'" onmouseout="this.style.background='transparent'">
+                    <input type="radio" name="q_{{ q.id }}" value="D"> D) {{ q.option_d }}
+                </label>
+            </div>
+        </div>
+        {% endfor %}
+
+        <div style="text-align: center;">
+            <button type="submit" class="btn" style="padding: 15px 60px; font-size: 1.1rem;">Submit Assessment</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+
+==================================================
+
+File: templates\records.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="glass-card" style="margin-bottom: 2rem;">
+    <h2>📁 Student Records Dashboard</h2>
+    <p>View all assessments stored in the <strong>XAMPP MySQL Database</strong>.</p>
+    
+    <div style="background: rgba(0, 0, 0, 0.2); padding: 15px; border-radius: 10px; display: inline-block; margin-top: 10px;">
+        <span style="color: #aaa; margin-right: 15px;">Total Students Assessed:</span> 
+        <strong style="font-size: 1.5rem; color: #00d2ff;">{{ records|length }}</strong>
+    </div>
+</div>
+
+<div class="glass-card" style="overflow-x: auto;">
+    <style>
+        .records-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0 10px;
+            margin-top: 1rem;
+        }
+        .records-table th {
+            padding: 1.2rem;
+            text-align: left;
+            color: var(--text-secondary);
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .records-table td {
+            padding: 1.2rem;
+            background: rgba(255, 255, 255, 0.02);
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .records-table tr td:first-child {
+            border-left: 1px solid rgba(255, 255, 255, 0.05);
+            border-top-left-radius: 12px;
+            border-bottom-left-radius: 12px;
+        }
+        .records-table tr td:last-child {
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
+            border-top-right-radius: 12px;
+            border-bottom-right-radius: 12px;
+        }
+        .records-table tr:hover td {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(56, 189, 248, 0.3);
+            transition: all 0.2s ease;
+        }
+    </style>
+
+    {% if records %}
+    <table class="records-table">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Student</th>
+                <th>Roll No</th>
+                <th>Subject</th>
+                <th>Score</th>
+                <th>Interest</th>
+                <th>Predicted Path</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for record in records %}
+            <tr>
+                <td style="color: var(--text-secondary); font-size: 0.85rem;">
+                    {{ record.created_at.strftime('%b %d, %H:%M') }}
+                </td>
+                <td>
+                    <div style="font-weight: 600; color: var(--accent-primary);">{{ record.name }}</div>
+                </td>
+                <td style="font-family: monospace; letter-spacing: 1px;">{{ record.roll_number }}</td>
+                <td>{{ record.subject }}</td>
+                <td>
+                    <div style="font-weight: 700;">{{ record.marks }}%</div>
+                </td>
+                <td>
+                    <span class="badge" style="background: rgba(129, 140, 248, 0.1); color: var(--accent-secondary);">
+                        {{ record.interest }}
+                    </span>
+                </td>
+                <td>
+                    <span class="badge {{ 'badge-beginner' if record.predicted_level == 'Beginner' else 'badge-intermediate' if record.predicted_level == 'Intermediate' else 'badge-advanced' }}">
+                        {{ record.predicted_level }}
+                    </span>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div style="text-align: center; padding: 40px; color: #aaa;">
+        <p>No student records found yet. Please complete an assessment.</p>
+    </div>
+    {% endif %}
+</div>
+
+<div style="text-align: center; margin-top: 30px;">
+    <a href="/assessment" class="btn">Take New Assessment</a>
+</div>
+{% endblock %}
+
+
+==================================================
+
+File: templates\register.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block content %}
+<div style="display: flex; justify-content: center; align-items: center; min-height: 90vh; padding: 2rem 0;">
+    <div class="glass-card animate-fadeIn" style="width: 100%; max-width: 500px;">
+        <div style="text-align: center; margin-bottom: 2.5rem;">
+            <h1 style="color: var(--accent-secondary); margin-bottom: 0.5rem;">Student Registration</h1>
+            <p style="color: var(--text-secondary);">Join our AI-powered learning community.</p>
+        </div>
+
+        <form action="/register" method="POST">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div class="form-group">
+                    <label>Full Name</label>
+                    <input type="text" name="name" placeholder="John Doe" required>
+                </div>
+                <div class="form-group">
+                    <label>Roll Number</label>
+                    <input type="text" name="roll" placeholder="MCA001" required>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Email Address</label>
+                <input type="email" name="email" placeholder="student@college.edu" required>
+            </div>
+            
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" name="password" placeholder="••••••••" required>
+            </div>
+
+            <div class="form-group">
+                <label>Secondary Interest</label>
+                <select name="interest" required>
+                    <option value="Data Science">Data Science</option>
+                    <option value="Machine Learning">Machine Learning</option>
+                    <option value="Big Data">Big Data</option>
+                    <option value="Deep Learning">Deep Learning</option>
+                    <option value="Web Development">Web Development</option>
+                </select>
+            </div>
+            
+            <button type="submit" class="btn btn-theme w-100" style="margin-top: 1rem; background: linear-gradient(135deg, var(--accent-secondary), var(--accent-primary));">
+                Create My Account
+            </button>
+        </form>
+        
+        <div style="text-align: center; margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 1.5rem;">
+            <span style="color: var(--text-secondary);">Already have an account?</span>
+            <a href="/login" style="color: var(--accent-secondary); text-decoration: none; font-weight: 600;"> Sign In</a>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+==================================================
+
+File: templates\resources.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="animate-fadeIn">
+    <h1 style="margin-bottom: 0.5rem;">📚 Learning Resources</h1>
+    <p style="color: var(--text-secondary); margin-bottom: 2rem;">Explore curated materials to master your chosen
+        subjects.</p>
+
+    <div style="flex-direction: column; gap: 3rem; display: flex;">
+        {% for level, subjects in grouped_courses.items() %}
+        <div>
+            <h2 style="color: var(--accent-primary); margin-bottom: 1.5rem; border-bottom: 2px solid var(--accent-primary); display: inline-block;">🎓 {{ level }} Level</h2>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem;">
+                {% for subject, courses in subjects.items() %}
+                <div class="glass-card">
+                    <h3 style="color: var(--accent-secondary); font-size: 1.1rem; margin-bottom: 1rem;">{{ subject }}</h3>
+                    <div style="display: flex; flex-direction: column; gap: 10px;">
+                        {% for course in courses %}
+                        <a href="{{ course.url }}" target="_blank" class="nav-link" style="background: rgba(255,255,255,0.03); display: flex; align-items: center; gap: 10px; padding: 12px; border-radius: 8px;">
+                            <i class="fab fa-youtube" style="color: #ff0000; font-size: 1.2rem;"></i>
+                            <div>
+                                <div style="font-weight: 600; font-size: 0.9rem;">{{ course.title }}</div>
+                                <div style="font-size: 0.75rem; color: var(--text-secondary);">{{ course.description[:60] }}...</div>
+                            </div>
+                        </a>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+        
+        {% if not grouped_courses %}
+        <div class="glass-card" style="text-align: center; padding: 3rem;">
+            <p style="color: var(--text-secondary);">No dynamic courses found in database. Showing defaults...</p>
+            <div style="display: flex; justify-content: center; gap: 1rem; margin-top: 1rem;">
+                <a href="https://www.youtube.com/results?search_query=machine+learning+tutorial" target="_blank" class="btn">Search YouTube</a>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+==================================================
+
+File: templates\result.html
+--------------------------------------------------
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="animate-fadeIn">
+    <div style="text-align: center; margin-bottom: 2.5rem;">
+        <h1 style="font-size: 2.5rem; margin-bottom: 0.5rem;">🎯 Your Learning Path</h1>
+        <p style="color: var(--text-secondary);">We've analyzed your performance using our AI model. Here is your
+            personalized recommendation.</p>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1.5fr; gap: 2rem; margin-bottom: 3rem;">
+        <!-- Prediction Card -->
+        <div class="glass-card"
+            style="text-align: center; border: 1px solid var(--accent-primary); background: rgba(56, 189, 248, 0.05);">
+            <div
+                style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.5rem; letter-spacing: 0.1rem;">
+                AI PREDICTION</div>
+
+            <div style="margin-bottom: 2rem;">
+                <span class="badge badge-{{ level|lower }}"
+                    style="font-size: 1.5rem; padding: 10px 24px; border-radius: 30px;">
+                    {{ level }}
+                </span>
+            </div>
+
+            <div style="margin-top: 2rem;">
+                <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 10px;">MODEL CONFIDENCE
+                </div>
+                <div style="font-size: 2.5rem; font-weight: 700; color: var(--accent-primary);">{{
+                    "%.1f"|format(confidence) }}%</div>
+            </div>
+        </div>
+
+        <!-- Metric Overview -->
+        <div class="glass-card">
+            <h3 style="margin-bottom: 1.5rem;">📊 Performance Summary</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                <div style="background: rgba(255,255,255,0.03); padding: 1.2rem; border-radius: 12px;">
+                    <div style="color: var(--text-secondary); font-size: 0.8rem;">SUBJECT</div>
+                    <div style="font-weight: 600;">{{ subject }}</div>
+                </div>
+                <div style="background: rgba(255,255,255,0.03); padding: 1.2rem; border-radius: 12px;">
+                    <div style="color: var(--text-secondary); font-size: 0.8rem;">MARKS</div>
+                    <div style="font-weight: 600; color: var(--accent-primary);">{{ marks }}%</div>
+                </div>
+                <div style="background: rgba(255,255,255,0.03); padding: 1.2rem; border-radius: 12px;">
+                    <div style="color: var(--text-secondary); font-size: 0.8rem;">INTEREST <span
+                            style="color: var(--accent-secondary); font-size: 0.7rem;">(AI PREDICTED)</span></div>
+                    <div style="font-weight: 600;">{{ interest }}</div>
+                </div>
+                <div style="background: rgba(255,255,255,0.03); padding: 1.2rem; border-radius: 12px;">
+                    <div style="color: var(--text-secondary); font-size: 0.8rem;">STUDY TIME</div>
+                    <div style="font-weight: 600;">{{ time_spent }}h / day</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 3rem;">
+        <!-- Recommendations Card -->
+        <div class="glass-card animate-fadeIn" style="animation-delay: 0.2s;">
+            <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 2rem;">
+                <div
+                    style="width: 45px; height: 45px; background: rgba(56, 189, 248, 0.1); border-radius: 12px; display: flex; align-items: center; justify-content: center; color: var(--accent-primary);">
+                    <i class="fas fa-lightbulb" style="font-size: 1.5rem;"></i>
+                </div>
+                <div>
+                    <h2 style="font-size: 1.25rem;">Personalized Study Plan</h2>
+                    <p style="color: var(--text-secondary); font-size: 0.9rem;">Tailored for your performance in {{
+                        subject }}</p>
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem;">
+                <div>
+                    <h4
+                        style="color: var(--accent-secondary); margin-bottom: 1rem; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px;">
+                        🔧 Areas for Improvement</h4>
+                    <ul style="list-style: none; display: flex; flex-direction: column; gap: 12px;">
+                        {% for area in improvement_areas %}
+                        <li
+                            style="display: flex; align-items: flex-start; gap: 12px; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 10px; border-left: 3px solid var(--accent-secondary);">
+                            <i class="fas fa-check-circle" style="color: var(--accent-secondary); margin-top: 4px;"></i>
+                            <span style="font-size: 0.95rem;">{{ area }}</span>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+
+                <div>
+                    <h4
+                        style="color: var(--advanced-green); margin-bottom: 1rem; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px;">
+                        🚀 Next Steps</h4>
+                    <div
+                        style="padding: 1.5rem; background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.1); border-radius: 16px;">
+                        <p style="line-height: 1.6; font-size: 1rem; margin-bottom: 1rem;">{{ next_steps }}</p>
+                        <a href="/resources" class="btn" style="width: 100%;">Explore Learning Paths</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Resources -->
+        <div class="glass-card">
+            <h3 style="margin-bottom: 1.5rem;">📺 Recommended Content</h3>
+            <div style="display: flex; flex-direction: column; gap: 1rem;">
+                {% for resource in resources %}
+                <a href="{{ resource.url }}" target="_blank" class="nav-link"
+                    style="background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.1);">
+                    ▶ {{ resource.title }}
+                </a>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Level Guidance -->
+    <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">📚 Level-Specific Guidance</h3>
+        <ul style="list-style: none; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            {% if level == "Beginner" %}
+            <li style="padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px;">📖 Focus on basic
+                concepts and fundamentals</li>
+            <li style="padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px;">🎥 Watch introductory
+                tutorial videos</li>
+            <li style="padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px;">✏️ Practice simple
+                exercises regularly</li>
+            <li style="padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px;">📝 Take detailed notes
+                during study</li>
+            {% elif level == "Intermediate" %}
+            <li style="padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px;">🛠️ Work on practical
+                mini-projects</li>
+            <li style="padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px;">💡 Solve medium-level
+                problems</li>
+            <li style="padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px;">🔍 Analyze your mistakes
+                and learn</li>
+            <li style="padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px;">👥 Collaborate with
+                peers on assignments</li>
+            {% else %}
+            <li style="padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px;">🚀 Build real-world
+                projects</li>
+            <li style="padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px;">🔬 Explore advanced
+                topics in your field</li>
+            <li style="padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px;">📊 Analyze complex
+                datasets</li>
+            <li style="padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px;">🎓 Consider
+                specialization in sub-domains</li>
+            {% endif %}
+        </ul>
+    </div>
+
+    <div style="text-align: center; margin: 3rem 0;">
+        <a href="/dashboard" class="btn">Return to Dashboard</a>
+        <a href="/assessment" class="btn"
+            style="background: transparent; border: 1.5px solid var(--accent-primary); color: var(--accent-primary); margin-left: 15px;">Take
+            Another Assessment</a>
+    </div>
+</div>
+{% endblock %}
+
+==================================================
+
+File: dataset\app.py
+--------------------------------------------------
+import streamlit as st
+import numpy as np
+import tensorflow as tf
+import joblib
+import os
+from datetime import datetime
+import matplotlib.pyplot as plt
+from PIL import Image
+import pandas as pd
+import time
+import mysql.connector
+from mysql.connector import Error
+
+# =============================
+# PAGE CONFIGURATION
+# =============================
+st.set_page_config(
+    page_title="AI Student Learning Path Advisor",
+    page_icon="🎓",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# =============================
+# CUSTOM STYLING
+# =============================
+st.markdown("""
+    <style>
+        .main-header {
+            text-align: center;
+            color: #1f77b4;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            font-weight: bold;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            border-radius: 10px;
+            color: white;
+        }
+        .metric-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            border-radius: 10px;
+            color: white;
+        }
+        .recommendation-box {
+            background-color: #f0f2f6;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            margin: 10px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .success-box {
+            background-color: #d4edda;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #28a745;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .info-box {
+            background-color: #d1ecf1;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #17a2b8;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .feature-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+            text-align: center;
+            transition: transform 0.3s;
+        }
+        .level-badge {
+            display: inline-block;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .beginner {
+            background-color: #ff6b6b;
+            color: white;
+        }
+        .intermediate {
+            background-color: #ffd93d;
+            color: black;
+        }
+        .advanced {
+            background-color: #6bcf7f;
+            color: white;
+        }
+        .stats-container {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        .login-container {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 40px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            color: white;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin: 15px 0;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# =============================
+# LOAD MODEL & DEPENDENCIES
+# =============================
+@st.cache_resource
+def load_models():
+    try:
+        model = tf.keras.models.load_model("model/student_model.h5")
+        scaler = joblib.load("model/scaler.pkl")
+        level_map = joblib.load("model/level_map.pkl")
+        return model, scaler, level_map
+    except Exception as e:
+        st.error(f"Error loading models: {e}")
+        return None, None, None
+
+model, scaler, level_map = load_models()
+
+# =============================
+# SESSION STATE INITIALIZATION
+# =============================
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.user_email = ""
+    st.session_state.user_name = ""
+
+if "current_page" not in st.session_state:
+    st.session_state.current_page = "home"
+
+if "user_id" not in st.session_state:
+    st.session_state.user_id = None
+
+# =============================
+# DATABASE UTILITIES
+# =============================
+def get_db_connection():
+    """Establish and return a MySQL database connection"""
+    try:
+        conn = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="",
+            database="student_learning_db",
+            auth_plugin='mysql_native_password'
+        )
+        return conn
+    except Error as e:
+        st.error(f"Database Connection Error: {e}")
+        return None
+
+if "student_records" not in st.session_state:
+    st.session_state.student_records = []
+
+# =============================
+# AUTHENTICATION MODULE
+# =============================
+def login_page():
+    """User authentication page"""
+    col1, col2, col3 = st.columns([0.5, 2, 0.5])
+
+    with col2:
+        st.markdown("<h1 class='main-header'>🎓 AI Student Learning Path Advisor</h1>", unsafe_allow_html=True)
+
+        st.markdown("### 👋 Welcome! Please Log In")
+        st.markdown("*Unlock your personalized learning journey*")
+
+        email = st.text_input("📧 Email Address", placeholder="your.email@college.edu")
+        password = st.text_input("🔑 Password", type="password", placeholder="Enter password")
+
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col1:
+            login_btn = st.button("🔐 Login", use_container_width=True, key="login_btn")
+        with col3:
+            signup_btn = st.button("📝 Sign Up", use_container_width=True, key="signup_btn")
+
+    # Handle login logic
+    if login_btn:
+        if email and password:
+            conn = get_db_connection()
+            if conn:
+                try:
+                    cursor = conn.cursor(dictionary=True)
+                    cursor.execute("SELECT * FROM users WHERE email = %s AND password = %s", (email, password))
+                    user = cursor.fetchone()
+                    cursor.close()
+                    conn.close()
+
+                    if user:
+                        st.session_state.logged_in = True
+                        st.session_state.user_id = user['id']
+                        st.session_state.user_email = user['email']
+                        st.session_state.user_name = user['name']
+                        st.success(f"✅ Welcome back, {user['name']}!")
+                        st.balloons()
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid email or password")
+                except Error as e:
+                    st.error(f"Login error: {e}")
+        else:
+            st.error("❌ Please enter both email and password")
+
+    if signup_btn:
+        st.info("📝 Sign up functionality coming soon!")
+
+# =============================
+# HOME PAGE
+# =============================
+def home_page():
+    """Main dashboard/home page"""
+    col1, col2, col3 = st.columns([0.5, 2, 0.5])
+    with col2:
+        st.markdown("<h1 class='main-header'>🎓 AI Student Learning Path Advisor</h1>", unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Welcome section with enhanced styling
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.markdown(f"""
+        <div class="info-box">
+            <h2>👋 Welcome back, <span style="color: #667eea;"><b>{st.session_state.user_name.title()}</b></span>!</h2>
+            <p>This intelligent system analyzes your learning patterns and recommends 
+            personalized study paths based on your marks, interest level, and time commitment.</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.metric("📊 Current Date", datetime.now().strftime("%d-%b-%Y"))
+    
+    # Feature cards with enhanced styling
+    st.markdown("### ✨ Key Features")
+    col1, col2, col3 = st.columns(3, gap="large")
+    
+    with col1:
+        st.markdown("""
+        <div class="feature-card">
+            <h3>🤖</h3>
+            <h4>AI Analysis</h4>
+            <p>Advanced ML model analyzes your learning patterns with 85%+ accuracy</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div class="feature-card">
+            <h3>📈</h3>
+            <h4>Personalized Path</h4>
+            <p>Get customized learning recommendations tailored to your needs</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+        <div class="feature-card">
+            <h3>📊</h3>
+            <h4>Progress Tracking</h4>
+            <p>Monitor your learning journey with detailed analytics and insights</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Quick stats with improved visualization
+    st.markdown("### 📈 Quick Statistics")
+    if st.session_state.student_records:
+        col1, col2, col3, col4 = st.columns(4, gap="medium")
+        with col1:
+            st.metric("📚 Assessments", len(st.session_state.student_records), "+1")
+        with col2:
+            avg_marks = np.mean([r['marks'] for r in st.session_state.student_records])
+            st.metric("📊 Avg Marks", f"{avg_marks:.1f}", "+5")
+        with col3:
+            avg_time = np.mean([r['time_spent'] for r in st.session_state.student_records])
+            st.metric("⏱ Avg Study", f"{avg_time:.1f}h", "+0.5h")
+        with col4:
+            st.metric("🎯 Latest Level", st.session_state.student_records[-1]['level'], "✅")
+    else:
+        st.markdown("""
+        <div class="info-box">
+            <h3>📋 Get Started</h3>
+            <p>Take your first assessment to see statistics and personalized recommendations!</p>
+            <p>👉 Click <b>Assessment</b> in the sidebar to begin</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# =============================
+# ASSESSMENT MODULE
+# =============================
+def assessment_page():
+    """Student assessment and learning level prediction"""
+    st.markdown("## 📝 Student Assessment")
+    st.markdown("---")
+    
+    col1, col2 = st.columns([1, 1], gap="large")
+    
+    with col1:
+        st.markdown("### 👤 Student Information")
+        student_name = st.text_input("Full Name", placeholder="Enter your full name")
+        student_roll = st.text_input("Roll Number", placeholder="Enter your roll number")
+        subject = st.selectbox(
+            "📚 Subject/Course",
+            ["Data Science", "Machine Learning", "Big Data", "Deep Learning", "Web Development", "Cloud Computing"]
+        )
+    
+    with col2:
+        st.markdown("### 📊 Performance Metrics")
+        marks = st.slider("Marks Obtained", 0, 100, 60, step=5)
+        
+        interest = st.selectbox(
+            "Interest Level",
+            ["Low", "Medium", "High"]
+        )
+        
+        time_spent = st.slider(
+            "Study Time (hours/day)",
+            0.5, 8.0, 2.0, step=0.5
+        )
+    
+    st.markdown("---")
+    
+    # Display current inputs visually
+    st.markdown("### 📌 Assessment Summary")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("📊 Marks", marks, delta="out of 100")
+    with col2:
+        st.metric("🔥 Interest", interest)
+    with col3:
+        st.metric("⏱ Daily Study Time", f"{time_spent}h")
+    
+    st.markdown("---")
+    
+    # Prediction button
+    if st.button("🤖 Generate Learning Path Recommendation", use_container_width=True):
+        if not student_name or not student_roll:
+            st.error("❌ Please fill in all required fields")
+        elif model is None:
+            st.error("❌ Model not loaded. Please check model files.")
+        else:
+            # Prepare data
+            interest_map = {"Low": 1, "Medium": 2, "High": 3}
+            input_data = np.array([[marks, interest_map[interest], time_spent]])
+            input_scaled = scaler.transform(input_data)
+            
+            # Predict
+            prediction = model.predict(input_scaled, verbose=0)
+            cluster = np.argmax(prediction)
+            confidence = np.max(prediction) * 100
+            level = level_map[cluster]
+            
+            # Save to MySQL
+            conn = get_db_connection()
+            if conn:
+                try:
+                    cursor = conn.cursor()
+                    query = """
+                        INSERT INTO assessments 
+                        (user_id, subject, marks, interest, time_spent, predicted_level, confidence) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """
+                    cursor.execute(query, (st.session_state.user_id, subject, marks, interest, float(time_spent), level, float(confidence)))
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+                    st.success("✅ Assessment saved to database!")
+                except Error as e:
+                    st.error(f"Error saving assessment: {e}")
+            
+            # Display results
+            show_assessment_results(student_name, level, confidence, marks, interest, time_spent)
+
+def show_assessment_results(name, level, confidence, marks, interest, time_spent):
+    """Display assessment results and recommendations"""
+    st.markdown("---")
+    st.markdown("### 🎯 Assessment Results")
+    
+    # Result cards with color coding
+    col1, col2, col3 = st.columns(3, gap="medium")
+    
+    level_colors = {
+        "Beginner": "#ff6b6b",
+        "Intermediate": "#ffd93d", 
+        "Advanced": "#6bcf7f"
+    }
+    level_emoji = {"Beginner": "🔴", "Intermediate": "🟡", "Advanced": "🟢"}
+    
+    with col1:
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; color: white; text-align: center;">
+            <h2>👤</h2>
+            <h3>{name}</h3>
+            <p>Student Name</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, {level_colors.get(level, '#999')} 0%, {level_colors.get(level, '#999')}dd 100%); padding: 20px; border-radius: 10px; color: white; text-align: center;">
+            <h2>{level_emoji.get(level, '')}</h2>
+            <h3>{level}</h3>
+            <p>Predicted Learning Level</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; color: white; text-align: center;">
+            <h2>📈</h2>
+            <h3>{confidence:.1f}%</h3>
+            <p>Model Confidence</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Confidence progress bar
+    st.progress(int(confidence) / 100)
+    
+    # Dynamic Resources from DB
+    db_resources = []
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM resources WHERE level = %s LIMIT 5", (level,))
+            db_resources = cursor.fetchall()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            st.error(f"Error fetching resources: {e}")
+
+    # Learning Path Tips (Keep these for UI structure)
+    level_tips = {
+        "Beginner": ["📖 Revise basics", "🎥 Watch tutorials", "✏️ Practice basics"],
+        "Intermediate": ["🛠️ Build projects", "💡 Solve problems", "🔍 Analyze errors"],
+        "Advanced": ["🚀 Specialize further", "📂 Manage complex data", "☁️ Deploy models"]
+    }
+    current_tips = level_tips.get(level, level_tips["Beginner"])
+    
+    st.markdown("---")
+    st.markdown(f"### {level_emoji.get(level, '')} Personalized Learning Path for {level} Level")
+    
+    col1, col2 = st.columns([1.5, 1], gap="large")
+    
+    with col1:
+        st.markdown("#### 📌 Recommended Actions:")
+        for idx, tip in enumerate(current_tips, 1):
+            st.markdown(f"**{idx}. {tip}**")
+    
+    with col2:
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, {level_colors.get(level, '#999')} 0%, {level_colors.get(level, '#999')}dd 100%); padding: 15px; border-radius: 10px; color: white;">
+            <h4>📚 Suggested Resources</h4>
+        </div>
+        """, unsafe_allow_html=True)
+        if db_resources:
+            for res in db_resources:
+                st.markdown(f"✅ [{res['title']}]({res['link']})")
+        else:
+            st.info("Check back later for updated materials!")
+    
+    # Learning visualization
+    st.markdown("---")
+    st.markdown("### 📊 Your Learning Profile")
+    
+    col1, col2 = st.columns(2, gap="large")
+    
+    with col1:
+        # Profile chart
+        fig, ax = plt.subplots(figsize=(7, 5))
+        categories = ['Marks\n(0-100)', 'Interest\n(0-3)', 'Study Time\n(hrs)']
+        values = [marks, interest_to_number(interest), time_spent * 12.5]  # Scale to 0-100
+        colors_list = ['#667eea', '#764ba2', '#f093fb']
+        bars = ax.bar(categories, values, color=colors_list, edgecolor='white', linewidth=2)
+        
+        # Add value labels on bars
+        for bar, val in zip(bars, [marks, interest_to_number(interest), time_spent]):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f'{val:.1f}', ha='center', va='bottom', fontweight='bold', fontsize=11)
+        
+        ax.set_ylabel('Value', fontsize=12, fontweight='bold')
+        ax.set_title('Your Learning Profile', fontsize=14, fontweight='bold', pad=20)
+        ax.set_ylim(0, 100)
+        ax.grid(axis='y', alpha=0.3, linestyle='--')
+        plt.tight_layout()
+        st.pyplot(fig)
+    
+    with col2:
+        # Confidence gauge
+        fig, ax = plt.subplots(figsize=(7, 5))
+        
+        # Create semi-circle gauge
+        angles = np.linspace(0, np.pi, 100)
+        radius = 1
+        
+        # Background
+        ax.plot(np.cos(angles), np.sin(angles), 'lightgray', linewidth=20, zorder=1)
+        
+        # Confidence indicator
+        conf_angle = (confidence / 100) * np.pi
+        ax.plot(np.cos(angles[:int(100*(confidence/100))]), 
+               np.sin(angles[:int(100*(confidence/100))]), 
+               color=level_colors[level], linewidth=20, zorder=2)
+        
+        # Needle
+        needle_angle = conf_angle
+        ax.plot([0, 0.7*np.cos(needle_angle)], [0, 0.7*np.sin(needle_angle)], 
+               'black', linewidth=3, zorder=3)
+        
+        # Center circle
+        circle = plt.Circle((0, 0), 0.1, color='black', zorder=4)
+        ax.add_patch(circle)
+        
+        # Labels
+        ax.text(0, -0.3, f'{confidence:.1f}%', fontsize=28, fontweight='bold', 
+               ha='center', color=level_colors[level])
+        ax.text(0, -0.55, 'Prediction Confidence', fontsize=12, ha='center', 
+               fontweight='bold')
+        
+        ax.set_xlim(-1.2, 1.2)
+        ax.set_ylim(-0.7, 1.2)
+        ax.set_aspect('equal')
+        ax.axis('off')
+        plt.tight_layout()
+        st.pyplot(fig)
+    
+    # Success message
+    st.markdown("---")
+    st.success(f"✅ Assessment completed! Your learning level: **{level}**")
+
+def interest_to_number(interest):
+    """Convert interest text to numeric"""
+    return {"Low": 1, "Medium": 2, "High": 3}.get(interest, 2)
+
+# =============================
+# PROGRESS TRACKING MODULE
+# =============================
+def progress_page():
+    """Track student progress over time from MySQL"""
+    st.markdown("## 📈 Progress Tracking")
+    st.markdown("---")
+    
+    conn = get_db_connection()
+    if not conn:
+        st.error("Failed to connect to the database.")
+        return
+
+    try:
+        query = "SELECT * FROM assessments WHERE user_id = %s ORDER BY created_at ASC"
+        df = pd.read_sql(query, conn, params=(st.session_state.user_id,))
+        conn.close()
+    except Exception as e:
+        st.error(f"Error fetching progress: {e}")
+        return
+    
+    if df.empty:
+        st.info("📋 No assessment records yet. Take your first assessment to start tracking progress!")
+        return
+    
+    # Display records table
+    st.markdown("### 📊 Assessment History")
+    # Rename columns for better display if needed
+    display_df = df.copy()
+    
+    # Show dataframe with styling
+    st.dataframe(display_df, use_container_width=True)
+    
+    st.markdown("---")
+    
+    # Progress charts
+    st.markdown("### 📉 Performance Trends")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Marks trend
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(range(len(df)), df['marks'], marker='o', linewidth=2, markersize=8, color='#667eea')
+        ax.set_xlabel('Assessment #')
+        ax.set_ylabel('Marks')
+        ax.set_title('Marks Progression')
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+    
+    with col2:
+        # Study time trend
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(range(len(df)), df['time_spent'], marker='s', linewidth=2, markersize=8, color='#764ba2')
+        ax.set_xlabel('Assessment #')
+        ax.set_ylabel('Hours/Day')
+        ax.set_title('Study Time Progression')
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+    
+    # Level distribution
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        level_counts = df['predicted_level'].value_counts()
+        fig, ax = plt.subplots(figsize=(8, 4))
+        colors_list = ['#ff6b6b', '#ffd93d', '#6bcf7f']
+        ax.bar(level_counts.index, level_counts.values, color=colors_list[:len(level_counts)])
+        ax.set_ylabel('Count')
+        ax.set_title('Learning Level Distribution')
+        st.pyplot(fig)
+    
+    with col2:
+        # Interest distribution
+        interest_counts = df['interest'].value_counts()
+        fig, ax = plt.subplots(figsize=(8, 4))
+        colors_dict = {'Low': '#ff6b6b', 'Medium': '#ffd93d', 'High': '#6bcf7f'}
+        colors_list = [colors_dict.get(x, '#999') for x in interest_counts.index]
+        ax.pie(interest_counts.values, labels=interest_counts.index, colors=colors_list, autopct='%1.1f%%')
+        ax.set_title('Interest Level Distribution')
+        st.pyplot(fig)
+
+# =============================
+# RESOURCES MODULE
+# =============================
+def resources_page():
+    """Learning resources and recommendations"""
+    st.markdown("## 📚 Learning Resources")
+    st.markdown("---")
+    
+    conn = get_db_connection()
+    if not conn:
+        st.error("Failed to connect to the database.")
+        return
+
+    try:
+        query = "SELECT * FROM resources ORDER BY subject, level"
+        df = pd.read_sql(query, conn)
+        conn.close()
+    except Exception as e:
+        st.error(f"Error fetching resources: {e}")
+        return
+
+    if df.empty:
+        st.info("No resources available yet.")
+        return
+
+    subjects = df['subject'].unique()
+    selected_subject = st.selectbox("Select Subject", subjects)
+    
+    sub_df = df[df['subject'] == selected_subject]
+    
+    col1, col2 = st.columns(2)
+    
+    levels = ["Beginner", "Intermediate", "Advanced"]
+    
+    for i, level in enumerate(levels):
+        target_col = col1 if i % 2 == 0 else col2
+        with target_col:
+            st.markdown(f"#### 🎓 {level} Path")
+            level_df = sub_df[sub_df['level'] == level]
+            if level_df.empty:
+                st.write("*No resources for this level yet*")
+            for _, res in level_df.iterrows():
+                st.markdown(f"• **{res['title']}** ({res['type']}) - [Link]({res['link']})")
+
+# =============================
+# PROFILE MODULE
+# =============================
+def profile_page():
+    """User profile and settings"""
+    st.markdown("## 👤 My Profile")
+    st.markdown("---")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.markdown("### Account Information")
+        st.markdown(f"**Email:** {st.session_state.user_email}")
+        st.markdown(f"**Name:** {st.session_state.user_name.title()}")
+        st.markdown(f"**Member Since:** {datetime.now().strftime('%B %Y')}")
+        
+        st.markdown("---")
+        st.markdown("### Profile Statistics")
+        
+        conn = get_db_connection()
+        if conn:
+            try:
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute("SELECT COUNT(*) as count, AVG(marks) as avg_marks, AVG(time_spent) as avg_time FROM assessments WHERE user_id = %s", (st.session_state.user_id,))
+                stats_data = cursor.fetchone()
+                
+                cursor.execute("SELECT predicted_level FROM assessments WHERE user_id = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.user_id,))
+                latest = cursor.fetchone()
+                
+                cursor.close()
+                conn.close()
+                
+                if stats_data and stats_data['count'] > 0:
+                    st.metric("Total Assessments", stats_data['count'])
+                    st.metric("Average Marks", f"{stats_data['avg_marks']:.2f}/100")
+                    st.metric("Average Study Time", f"{stats_data['avg_time']:.2f}h")
+                    if latest:
+                        st.metric("Current Level", latest['predicted_level'])
+                else:
+                    st.info("Complete an assessment to see statistics")
+            except Exception as e:
+                st.error(f"Error loading stats: {e}")
+    
+    with col2:
+        st.markdown("### Quick Links")
+        st.markdown("- 📝 Take Assessment")
+        st.markdown("- 📈 View Progress")
+        st.markdown("- 📚 Learning Resources")
+        st.markdown("- ⚙️ Settings")
+
+# =============================
+# MAIN APP NAVIGATION
+# =============================
+def main():
+    """Main application flow"""
+    
+    if not st.session_state.logged_in:
+        login_page()
+    else:
+        # Sidebar navigation
+        with st.sidebar:
+            st.markdown("### 🗺️ Navigation")
+            st.markdown("---")
+            
+            page = st.radio(
+                "Select Page",
+                ["🏠 Home", "📝 Assessment", "📈 Progress", "📚 Resources", "👤 Profile"],
+                key="page_selector"
+            )
+            
+            st.markdown("---")
+            
+            # Sidebar info
+            st.markdown(f"**👤 Logged in as:** {st.session_state.user_name.title()}")
+            st.markdown(f"**📧 Email:** {st.session_state.user_email}")
+            
+            if st.button("🚪 Logout", use_container_width=True):
+                st.session_state.logged_in = False
+                st.session_state.current_page = "home"
+                st.rerun()
+        
+        # Route to selected page
+        if "Home" in page:
+            home_page()
+        elif "Assessment" in page:
+            assessment_page()
+        elif "Progress" in page:
+            progress_page()
+        elif "Resources" in page:
+            resources_page()
+        elif "Profile" in page:
+            profile_page()
+
+# =============================
+# FOOTER
+# =============================
+def footer():
+    """Display footer information"""
+    st.markdown("---")
+    st.markdown("""
+    <div style="text-align: center; padding: 20px; color: #666; font-size: 14px;">
+        <strong>🎓 AI-Based Student Learning Path Recommendation System</strong><br>
+        Final Year Project
+    </div>
+    """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
+    footer()
+
+
+==================================================
+
+File: dataset\main.py
+--------------------------------------------------
+# =============================
+# IMPORT LIBRARIES
+# =============================
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+
+# =============================
+# LOAD DATASET
+# =============================
+data = pd.read_csv("dataset/students.csv")
+
+print("\n===== ORIGINAL DATA =====")
+print(data)
+
+# =============================
+# DATA PREPROCESSING
+# =============================
+# Encode Interest
+interest_map = {"Low": 1, "Medium": 2, "High": 3}
+data["Interest"] = data["Interest"].map(interest_map)
+
+print("\n===== AFTER PREPROCESSING =====")
+print(data)
+
+# =============================
+# EXPLORATORY DATA ANALYSIS
+# =============================
+plt.figure()
+plt.bar(data["Student_ID"], data["Marks"])
+plt.xlabel("Student ID")
+plt.ylabel("Marks")
+plt.title("Student Marks Analysis")
+plt.show()
+
+plt.figure()
+plt.hist(data["Interest"], bins=3)
+plt.xlabel("Interest Level")
+plt.ylabel("Count")
+plt.title("Interest Distribution")
+plt.show()
+
+# =============================
+# FEATURE SELECTION & SCALING
+# =============================
+features = ["Marks", "Interest", "Time_Spent"]
+X = data[features]
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# =============================
+# K-MEANS CLUSTERING
+# =============================
+kmeans = KMeans(n_clusters=3, random_state=42)
+data["Cluster"] = kmeans.fit_predict(X_scaled)
+
+print("\n===== CLUSTERED DATA =====")
+print(data)
+
+# =============================
+# CLUSTER ANALYSIS (VERY IMPORTANT)
+# =============================
+cluster_summary = data.groupby("Cluster")[["Marks", "Time_Spent"]].mean()
+print("\n===== CLUSTER SUMMARY =====")
+print(cluster_summary)
+
+# Sort clusters by Marks to assign learning level
+sorted_clusters = cluster_summary.sort_values("Marks")
+
+level_map = {
+    sorted_clusters.index[0]: "Beginner",
+    sorted_clusters.index[1]: "Intermediate",
+    sorted_clusters.index[2]: "Advanced"
+}
+
+print("\n===== CLUSTER → LEVEL MAPPING =====")
+print(level_map)
+# =============================
+# CLUSTER VISUALIZATION
+# =============================
+plt.figure(figsize=(8, 6))
+plt.scatter(
+    data["Marks"],
+    data["Time_Spent"],
+    c=data["Cluster"],
+    cmap="viridis",
+    s=80
+)
+
+plt.xlabel("Marks")
+plt.ylabel("Time Spent")
+plt.title("Student Clustering using K-Means")
+plt.colorbar(label="Cluster")
+plt.grid(True)
+plt.show()
+
+
+# =============================
+# DEEP LEARNING MODEL (ANN)
+# =============================
+X_dl = X_scaled
+y_dl = data["Cluster"]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X_dl, y_dl, test_size=0.2, random_state=42
+)
+
+model = keras.Sequential([
+    layers.Dense(16, activation="relu", input_shape=(3,)),
+    layers.Dense(16, activation="relu"),
+    layers.Dense(3, activation="softmax")
+])
+
+model.compile(
+    optimizer="adam",
+    loss="sparse_categorical_crossentropy",
+    metrics=["accuracy"]
+)
+
+print("\n===== TRAINING ANN =====")
+model.fit(X_train, y_train, epochs=50, verbose=1)
+
+# =============================
+# MODEL EVALUATION
+# =============================
+loss, accuracy = model.evaluate(X_test, y_test, verbose=0)
+print(f"\nANN Accuracy: {accuracy * 100:.2f}%")
+
+# =============================
+# PREDICTION FOR NEW STUDENT
+# =============================
+# Example input
+sample_student = np.array([[60, 2, 2.0]])  # Marks, Interest, Time_Spent
+sample_scaled = scaler.transform(sample_student)
+
+prediction = model.predict(sample_scaled)
+predicted_cluster = np.argmax(prediction)
+confidence = np.max(prediction) * 100
+
+predicted_level = level_map[predicted_cluster]
+
+print("\n===== STUDENT PREDICTION =====")
+print(f"Predicted Level: {predicted_level}")
+print(f"Confidence: {confidence:.2f}%")
+
+# =============================
+# STUDENT GUIDANCE SYSTEM
+# =============================
+guidance = {
+    "Beginner": [
+        "Learn basic programming (Python)",
+        "Revise mathematics fundamentals",
+        "Understand basic data handling",
+        "Practice small coding problems",
+        "Move to Machine Learning basics"
+    ],
+    "Intermediate": [
+        "Learn Machine Learning algorithms",
+        "Work on feature engineering",
+        "Understand model evaluation",
+        "Build mini ML projects",
+        "Start Deep Learning basics"
+    ],
+    "Advanced": [
+        "Revise ML & DL fundamentals",
+        "Learn advanced neural networks",
+        "Work on real-world AI projects",
+        "Optimize & fine-tune models",
+        "Prepare for industry/research roles"
+    ]
+}
+
+print("\n===== RECOMMENDED STUDY PATH =====")
+for step in guidance[predicted_level]:
+    print("•", step)
+
+
+==================================================
+
+File: dataset\train_model.py
+--------------------------------------------------
+# =============================
+# IMPORT LIBRARIES
+# =============================
+import os
+import pandas as pd
+import numpy as np
+import joblib
+
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+
+# =============================
+# LOAD DATASET
+# =============================
+data = pd.read_csv("dataset/students.csv")
+
+
+# =============================
+# PREPROCESSING
+# =============================
+data["Interest"] = data["Interest"].map({
+    "Low": 1,
+    "Medium": 2,
+    "High": 3
+})
+
+features = ["Marks", "Interest", "Time_Spent"]
+X = data[features]
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# =============================
+# KMEANS CLUSTERING
+# =============================
+kmeans = KMeans(n_clusters=3, random_state=42)
+data["Cluster"] = kmeans.fit_predict(X_scaled)
+
+# =============================
+# CLUSTER → LEVEL MAPPING
+# =============================
+cluster_summary = data.groupby("Cluster")[["Marks"]].mean()
+sorted_clusters = cluster_summary.sort_values("Marks")
+
+level_map = {
+    sorted_clusters.index[0]: "Beginner",
+    sorted_clusters.index[1]: "Intermediate",
+    sorted_clusters.index[2]: "Advanced"
+}
+
+# =============================
+# ANN MODEL
+# =============================
+X_dl = X_scaled
+y_dl = data["Cluster"]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X_dl, y_dl, test_size=0.2, random_state=42
+)
+
+model = keras.Sequential([
+    layers.Dense(16, activation="relu", input_shape=(3,)),
+    layers.Dense(16, activation="relu"),
+    layers.Dense(3, activation="softmax")
+])
+
+model.compile(
+    optimizer="adam",
+    loss="sparse_categorical_crossentropy",
+    metrics=["accuracy"]
+)
+
+model.fit(X_train, y_train, epochs=100, verbose=0)
+
+# Diagnostics
+print(f"Cluster Means:\n{cluster_summary}")
+print(f"Level Map: {level_map}")
+
+# =============================
+# SAVE MODEL & FILES
+# =============================
+os.makedirs("model", exist_ok=True)
+
+model.save("model/student_model.h5")
+joblib.dump(scaler, "model/scaler.pkl")
+joblib.dump(level_map, "model/level_map.pkl")
+
+print("✅ Model, scaler, and level map saved successfully!")
+
+
+==================================================
+

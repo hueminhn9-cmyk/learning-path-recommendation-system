@@ -1,0 +1,98 @@
+[
+  {
+    "model": "Artificial Neural Network (Keras ANN)",
+    "accuracy": 99.8,
+    "precision": 99.8,
+    "recall": 99.8,
+    "f1_score": 99.8,
+    "confusion_matrix": [
+      [
+        448,
+        0,
+        0
+      ],
+      [
+        1,
+        297,
+        0
+      ],
+      [
+        0,
+        1,
+        253
+      ]
+    ]
+  },
+  {
+    "model": "Random Forest Classifier",
+    "accuracy": 99.7,
+    "precision": 99.7,
+    "recall": 99.7,
+    "f1_score": 99.7,
+    "confusion_matrix": [
+      [
+        448,
+        0,
+        0
+      ],
+      [
+        0,
+        297,
+        1
+      ],
+      [
+        0,
+        2,
+        252
+      ]
+    ]
+  },
+  {
+    "model": "Decision Tree Classifier",
+    "accuracy": 99.5,
+    "precision": 99.5,
+    "recall": 99.5,
+    "f1_score": 99.5,
+    "confusion_matrix": [
+      [
+        447,
+        1,
+        0
+      ],
+      [
+        1,
+        296,
+        1
+      ],
+      [
+        0,
+        2,
+        252
+      ]
+    ]
+  },
+  {
+    "model": "Support Vector Machine (SVM)",
+    "accuracy": 99.3,
+    "precision": 99.31,
+    "recall": 99.3,
+    "f1_score": 99.3,
+    "confusion_matrix": [
+      [
+        447,
+        1,
+        0
+      ],
+      [
+        1,
+        297,
+        0
+      ],
+      [
+        0,
+        5,
+        249
+      ]
+    ]
+  }
+]

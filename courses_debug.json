@@ -1,0 +1,66 @@
+[
+    {
+        "id": 1,
+        "level": "Beginner",
+        "title": "Intro to Data Science",
+        "url": "https://www.youtube.com/watch?v=ua-CiDNNj30",
+        "description": "Basics of data science.",
+        "subject": "General"
+    },
+    {
+        "id": 2,
+        "level": "Beginner",
+        "title": "Machine Learning Basics",
+        "url": "https://www.youtube.com/watch?v=GwIo3gDZCVQ",
+        "description": "ML fundamentals.",
+        "subject": "General"
+    },
+    {
+        "id": 3,
+        "level": "Intermediate",
+        "title": "EDA Projects",
+        "url": "https://www.youtube.com/watch?v=9_reh6vHmsE",
+        "description": "Hands-on EDA.",
+        "subject": "General"
+    },
+    {
+        "id": 4,
+        "level": "Advanced",
+        "title": "Deep Learning Specialization",
+        "url": "https://www.youtube.com/watch?v=T4S_W0T28c0",
+        "description": "Advanced neural networks.",
+        "subject": "General"
+    },
+    {
+        "id": 5,
+        "level": "Beginner",
+        "title": "Intro to Data Science",
+        "url": "https://www.youtube.com/watch?v=ua-CiDNNj30",
+        "description": "Basics of data science.",
+        "subject": "General"
+    },
+    {
+        "id": 6,
+        "level": "Beginner",
+        "title": "Machine Learning Basics",
+        "url": "https://www.youtube.com/watch?v=GwIo3gDZCVQ",
+        "description": "ML fundamentals.",
+        "subject": "General"
+    },
+    {
+        "id": 7,
+        "level": "Intermediate",
+        "title": "EDA Projects",
+        "url": "https://www.youtube.com/watch?v=9_reh6vHmsE",
+        "description": "Hands-on EDA.",
+        "subject": "General"
+    },
+    {
+        "id": 8,
+        "level": "Advanced",
+        "title": "Deep Learning Specialization",
+        "url": "https://www.youtube.com/watch?v=T4S_W0T28c0",
+        "description": "Advanced neural networks.",
+        "subject": "General"
+    }
+]

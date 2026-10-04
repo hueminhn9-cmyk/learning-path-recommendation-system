@@ -1,0 +1,8 @@
+ID: 1, Level: Beginner, Title: Intro to Data Science, URL: https://www.youtube.com/watch?v=ua-CiDNNj30
+ID: 2, Level: Beginner, Title: Machine Learning Basics, URL: https://www.youtube.com/watch?v=GwIo3gDZCVQ
+ID: 3, Level: Intermediate, Title: EDA Projects, URL: https://www.youtube.com/watch?v=9_reh6vHmsE
+ID: 4, Level: Advanced, Title: Deep Learning Specialization, URL: https://www.youtube.com/watch?v=T4S_W0T28c0
+ID: 5, Level: Beginner, Title: Intro to Data Science, URL: https://www.youtube.com/watch?v=ua-CiDNNj30
+ID: 6, Level: Beginner, Title: Machine Learning Basics, URL: https://www.youtube.com/watch?v=GwIo3gDZCVQ
+ID: 7, Level: Intermediate, Title: EDA Projects, URL: https://www.youtube.com/watch?v=9_reh6vHmsE
+ID: 8, Level: Advanced, Title: Deep Learning Specialization, URL: https://www.youtube.com/watch?v=T4S_W0T28c0
