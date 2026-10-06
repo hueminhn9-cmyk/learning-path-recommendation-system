@@ -1,4 +1,4 @@
-Level Map: {np.int32(0): 'Beginner', np.int32(1): 'Intermediate', np.int32(2): 'Advanced'}
+Level Map: {0: 'Beginner', 1: 'Intermediate', 2: 'Advanced'}
 Marks: 10, Interest: 1, Time: 0.5 -> Predicted: Beginner
 Marks: 20, Interest: 1, Time: 1.0 -> Predicted: Beginner
 Marks: 30, Interest: 1, Time: 1.5 -> Predicted: Beginner

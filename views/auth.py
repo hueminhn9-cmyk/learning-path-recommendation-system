@@ -47,11 +47,10 @@ def login_page():
 
         with tab2:
             st.subheader("Create Student Account ✨")
-            reg_name = st.text_input("Full Name", key="reg_name")
-            reg_roll = st.text_input("Roll Number / Student ID", key="reg_roll")
+            reg_name = st.text_input("Full Name / Họ và tên", key="reg_name")
+            reg_roll = st.text_input("Roll Number / Mã số Sinh viên (MSSV)", key="reg_roll")
             reg_email = st.text_input("Email Address", key="reg_email")
             reg_pass = st.text_input("Password", type="password", key="reg_pass")
-            reg_interest = st.selectbox("Interest Level", ["Low", "Medium", "High"], key="reg_interest")
 
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("✨ " + ("Đăng ký Tài khoản" if IS_VI() else "Register Account"), use_container_width=True):
@@ -60,10 +59,12 @@ def login_page():
                         conn = get_db()
                         cursor = conn.cursor()
                         cursor.execute("INSERT INTO users (name, roll_number, email, password, interest) VALUES (?, ?, ?, ?, ?)",
-                                       (reg_name, reg_roll, reg_email, reg_pass, reg_interest))
+                                       (reg_name, reg_roll, reg_email, reg_pass, "Medium"))
                         conn.commit()
                         conn.close()
-                        st.success("✅ Đăng ký thành công! Hãy đăng nhập." if IS_VI() else "✅ Account created successfully! Please log in.")
+                        st.success("✅ Đăng ký thành công! Hãy chuyển sang thẻ Đăng nhập." if IS_VI() else "✅ Account created successfully! Please switch to Login tab.")
                     except sqlite3.IntegrityError:
                         st.error("❌ Email đã tồn tại trên hệ thống." if IS_VI() else "❌ Email address is already registered.")
+                else:
+                    st.warning("⚠️ Vui lòng điền đầy đủ Tên, Email và Mật khẩu." if IS_VI() else "⚠️ Please enter Name, Email, and Password.")
         st.markdown('</div>', unsafe_allow_html=True)

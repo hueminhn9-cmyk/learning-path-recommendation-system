@@ -12,37 +12,34 @@ def assessment_page():
     <div class="hero-banner">
         <span class="hero-badge">📝 AI Evaluation Module</span>
         <h1 style="margin:8px 0; font-size:2.2rem; font-weight:800;">{"Đánh giá Lộ trình Học tập bằng AI" if IS_VI() else "AI Student Learning Path Assessment"}</h1>
-        <p style="font-size:1.05rem; opacity:0.9; margin:0;">Neural Network & Clustering Powered Level Prediction</p>
+        <p style="font-size:1.05rem; opacity:0.9; margin:0;">Machine Learning Powered Level Prediction & Custom Subject Roadmaps</p>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown('<div class="bw-card">', unsafe_allow_html=True)
     col1, col2 = st.columns(2, gap="large")
     all_subjects = get_all_subjects()
+    custom_option = "✏️ " + ("Môn học khác (Tự nhập tên tùy chỉnh)..." if IS_VI() else "Custom Subject (Type new name)...")
+    select_options = all_subjects + [custom_option]
 
     with col1:
         st.subheader("👤 " + ("Thông tin Sinh viên & Môn học" if IS_VI() else "Student & Subject Details"))
         student_name = st.text_input("Họ và Tên" if IS_VI() else "Full Name", value=st.session_state.user_name)
         
-        subj_mode = st.radio(
-            "📌 " + ("Phương thức nhập môn học:" if IS_VI() else "Subject Selection Mode:"),
-            ["📘 " + ("Chọn môn có sẵn trong hệ thống" if IS_VI() else "Select existing subject"),
-             "✏️ " + ("Gõ tên môn học mới tùy chỉnh" if IS_VI() else "Type new custom subject name")],
-            horizontal=True
+        selected_subject_choice = st.selectbox(
+            "📘 " + ("Chọn môn học hoặc tự nhập môn mới:" if IS_VI() else "Select or Type Subject:"), 
+            options=select_options,
+            key="catalog_subj_select"
         )
-        
-        if "Gõ tên môn" in subj_mode or "Type new" in subj_mode:
+
+        if selected_subject_choice == custom_option:
             subject = st.text_input(
-                "✏️ " + ("Nhập tên môn học mới của bạn (Gõ tự do):" if IS_VI() else "Enter your new custom subject name:"), 
-                placeholder="vd: Blockchain, Flutter, Golang, DevOps, iOS, Rust...",
+                "✏️ " + ("Nhập tên môn học tùy chỉnh:" if IS_VI() else "Enter custom subject name:"), 
+                placeholder="vd: Blockchain, Flutter, Golang, DevOps, Rust...",
                 key="custom_subj_text_input"
             )
         else:
-            subject = st.selectbox(
-                "📘 " + ("Chọn môn học từ danh mục hệ thống:" if IS_VI() else "Select subject from catalog:"), 
-                options=all_subjects,
-                key="catalog_subj_select"
-            )
+            subject = selected_subject_choice
 
     with col2:
         st.subheader("📊 " + ("Chỉ số Năng lực Học tập" if IS_VI() else "Performance Metrics"))
