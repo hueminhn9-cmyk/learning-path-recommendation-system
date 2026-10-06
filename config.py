@@ -56,6 +56,14 @@ def translate_subject_vi_to_en(query):
 
 def render_kpi_card(label, value, icon="📊", badge_text=None):
     badge_html = f'<span style="font-size:0.75rem; font-weight:700; background:#e0e7ff; color:#4338ca; padding:2px 8px; border-radius:6px; margin-left:auto;">{badge_text}</span>' if badge_text else ''
+    val_str = str(value)
+    if len(val_str) > 12:
+        val_font_size = "1.15rem"
+    elif len(val_str) > 8:
+        val_font_size = "1.3rem"
+    else:
+        val_font_size = "1.6rem"
+
     st.markdown(f"""
     <div style="
         background: #ffffff;
@@ -65,12 +73,18 @@ def render_kpi_card(label, value, icon="📊", badge_text=None):
         box-shadow: 0 4px 14px -3px rgba(15, 23, 42, 0.05);
         transition: all 0.25s ease;
         margin-bottom: 8px;
+        min-height: 125px;
+        height: 125px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        box-sizing: border-box;
     ">
-        <div style="font-size: 0.875rem; font-weight: 700; color: #64748b; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+        <div style="font-size: 0.875rem; font-weight: 700; color: #64748b; display: flex; align-items: center; gap: 6px;">
             <span style="font-size: 1.1rem;">{icon}</span> <span>{label}</span> {badge_html}
         </div>
-        <div style="font-size: 1.6rem; font-weight: 800; color: #1e1b4b; line-height: 1.25; word-wrap: break-word; overflow-wrap: break-word;">
-            {value}
+        <div style="font-size: {val_font_size}; font-weight: 800; color: #1e1b4b; line-height: 1.2; word-wrap: break-word; overflow-wrap: break-word;">
+            {val_str}
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -190,28 +204,64 @@ def apply_styles():
         line-height: 1.3 !important;
     }
 
+    /* Vertical centering for multi-column rows */
+    [data-testid="stHorizontalBlock"] {
+        align-items: center !important;
+    }
+
     /* Gradient Buttons */
     .stButton>button, button[kind="primary"], button[kind="secondary"] {
         background: linear-gradient(135deg, #4f46e5 0%, #6366f1 50%, #8b5cf6 100%) !important;
         color: #ffffff !important;
         border: none !important;
-        border-radius: 12px !important;
+        border-radius: 10px !important;
         font-weight: 700 !important;
-        font-size: 0.95rem !important;
-        padding: 12px 24px !important;
-        box-shadow: 0 10px 20px -5px rgba(79, 70, 229, 0.35) !important;
-        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        font-size: 0.875rem !important;
+        padding: 8px 12px !important;
+        box-shadow: 0 4px 12px -2px rgba(79, 70, 229, 0.3) !important;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        white-space: nowrap !important;
+        word-break: keep-all !important;
+        min-height: 38px !important;
+        width: 100% !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
     }
 
     .stButton>button *, button[kind="primary"] *, button[kind="secondary"] * {
         color: #ffffff !important;
         font-weight: 700 !important;
+        white-space: nowrap !important;
+        font-size: 0.875rem !important;
     }
 
     .stButton>button:hover, button[kind="primary"]:hover, button[kind="secondary"]:hover {
         background: linear-gradient(135deg, #4338ca 0%, #4f46e5 50%, #7c3aed 100%) !important;
-        box-shadow: 0 15px 25px -5px rgba(79, 70, 229, 0.45) !important;
-        transform: translateY(-2px) !important;
+        box-shadow: 0 8px 18px -4px rgba(79, 70, 229, 0.4) !important;
+        transform: translateY(-1px) !important;
+    }
+
+    /* Red/Rose styling for Delete buttons (keys starting with del_) */
+    div[class*="st-key-del_"] button {
+        background: linear-gradient(135deg, #e11d48 0%, #f43f5e 50%, #fb7185 100%) !important;
+        box-shadow: 0 4px 12px -2px rgba(225, 29, 72, 0.35) !important;
+    }
+
+    div[class*="st-key-del_"] button:hover {
+        background: linear-gradient(135deg, #be123c 0%, #e11d48 50%, #f43f5e 100%) !important;
+        box-shadow: 0 8px 18px -4px rgba(225, 29, 72, 0.45) !important;
+        transform: translateY(-1px) !important;
+    }
+
+    /* Green styling for Completed Goal status buttons (keys starting with completed_) */
+    div[class*="st-key-completed_"] button, div[class*="st-key-completed_"] button:disabled {
+        background: linear-gradient(135deg, #059669 0%, #10b981 50%, #34d399 100%) !important;
+        color: #ffffff !important;
+        border: none !important;
+        opacity: 1 !important;
+        cursor: default !important;
+        box-shadow: 0 4px 12px -2px rgba(16, 185, 129, 0.35) !important;
     }
 
     /* Form Controls & Inputs */

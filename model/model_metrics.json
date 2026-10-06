@@ -1,97 +1,97 @@
 [
   {
     "model": "Artificial Neural Network (Keras ANN)",
-    "accuracy": 99.8,
-    "precision": 99.8,
-    "recall": 99.8,
-    "f1_score": 99.8,
-    "confusion_matrix": [
-      [
-        448,
-        0,
-        0
-      ],
-      [
-        1,
-        297,
-        0
-      ],
-      [
-        0,
-        1,
-        253
-      ]
-    ]
-  },
-  {
-    "model": "Random Forest Classifier",
     "accuracy": 99.7,
     "precision": 99.7,
     "recall": 99.7,
     "f1_score": 99.7,
     "confusion_matrix": [
       [
-        448,
-        0,
+        897,
+        4,
         0
       ],
       [
         0,
-        297,
-        1
+        604,
+        2
       ],
       [
         0,
+        0,
+        493
+      ]
+    ]
+  },
+  {
+    "model": "Random Forest Classifier",
+    "accuracy": 99.9,
+    "precision": 99.9,
+    "recall": 99.9,
+    "f1_score": 99.9,
+    "confusion_matrix": [
+      [
+        899,
         2,
-        252
+        0
+      ],
+      [
+        0,
+        606,
+        0
+      ],
+      [
+        0,
+        0,
+        493
       ]
     ]
   },
   {
     "model": "Decision Tree Classifier",
-    "accuracy": 99.5,
-    "precision": 99.5,
-    "recall": 99.5,
-    "f1_score": 99.5,
+    "accuracy": 99.8,
+    "precision": 99.8,
+    "recall": 99.8,
+    "f1_score": 99.8,
     "confusion_matrix": [
       [
-        447,
-        1,
+        899,
+        2,
         0
       ],
       [
-        1,
-        296,
+        0,
+        605,
         1
       ],
       [
         0,
-        2,
-        252
+        1,
+        492
       ]
     ]
   },
   {
     "model": "Support Vector Machine (SVM)",
-    "accuracy": 99.3,
-    "precision": 99.31,
-    "recall": 99.3,
-    "f1_score": 99.3,
+    "accuracy": 99.25,
+    "precision": 99.26,
+    "recall": 99.25,
+    "f1_score": 99.25,
     "confusion_matrix": [
       [
-        447,
-        1,
-        0
-      ],
-      [
-        1,
-        297,
+        896,
+        5,
         0
       ],
       [
         0,
-        5,
-        249
+        604,
+        2
+      ],
+      [
+        0,
+        8,
+        485
       ]
     ]
   }

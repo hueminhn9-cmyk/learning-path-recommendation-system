@@ -77,8 +77,11 @@ def ai_analytics_page():
     df_metrics = pd.DataFrame(model_metrics)
     best_model = df_metrics.loc[df_metrics['accuracy'].idxmax()]
 
+    model_names = [m['model'].replace("Classifier", "").replace("Artificial Neural Network ", "").strip() for m in model_metrics]
+    best_name = best_model['model'].replace("Classifier", "").replace("Artificial Neural Network ", "").strip()
+
     c1, c2, c3, c4 = st.columns(4, gap="medium")
-    c1.metric("🥇 Best Performing Model", "Keras ANN")
+    c1.metric("🥇 Best Performing Model", best_name)
     c2.metric("🎯 Top Accuracy Score", f"{best_model['accuracy']:.1f}%")
     c3.metric("⭐ Weighted F1-Score", f"{best_model['f1_score']:.1f}%")
     c4.metric("⚙️ Total Trained Models", len(df_metrics))
@@ -101,7 +104,7 @@ def ai_analytics_page():
     
     ax_bm.set_ylabel('Percentage (%)', color='#0f172a', fontweight='bold')
     ax_bm.set_xticks(x)
-    ax_bm.set_xticklabels(["Keras ANN", "Random Forest", "Decision Tree", "SVM"], color='#0f172a', fontweight='bold')
+    ax_bm.set_xticklabels(model_names, color='#0f172a', fontweight='bold')
     ax_bm.tick_params(colors='#0f172a')
     ax_bm.set_ylim(0, 110)
     ax_bm.legend(facecolor='#ffffff', edgecolor='#cbd5e1', labelcolor='#0f172a')

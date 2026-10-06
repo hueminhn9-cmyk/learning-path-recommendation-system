@@ -56,7 +56,7 @@ def main():
         st.markdown("---")
         if st.button("🚪 " + ("Đăng xuất" if IS_VI() else "Logout"), use_container_width=True):
             st.session_state.logged_in = False
-            st.session_state.nav_radio = "Trang chủ" if IS_VI() else "Home"
+            st.session_state.pop("nav_radio", None)
             st.rerun()
 
     # Route mapping

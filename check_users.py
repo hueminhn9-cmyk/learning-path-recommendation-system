@@ -1,27 +1,23 @@
-import mysql.connector
+import sqlite3
 
-try:
-    conn = mysql.connector.connect(
-        host='localhost',
-        user='root',
-        password='',
-        database='student_learning_db'
-    )
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute('SELECT * FROM users')
-    rows = cursor.fetchall()
-    print("Existing Users:")
-    for row in rows:
-        print(f"ID: {row['id']}, Email: {row['email']}, Password: {row['password']}")
+def check_users():
+    conn = sqlite3.connect("student_learning_db.sqlite")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
     
-    if not rows:
-        print("No users found. Adding default student user.")
-        cursor.execute("INSERT INTO users (email, password, name, roll_number, interest) VALUES (%s, %s, %s, %s, %s)", 
-                       ("student@college.edu", "password123", "Default Student", "S101", "High"))
-        conn.commit()
-        print("Default student user 'student@college.edu' with password 'password123' added.")
-
-    cursor.close()
+    cursor.execute("SELECT id, name, roll_number, email, password, role, interest, current_level FROM users")
+    users = cursor.fetchall()
+    
+    print("\n================ DANH SACH NGUOI DUNG TRONG SQLITE ================")
+    print(f"{'ID':<4} | {'Full Name':<20} | {'Email':<25} | {'Password':<10} | {'Role':<8}")
+    print("-" * 75)
+    for u in users:
+        print(f"{u['id']:<4} | {u['name']:<20} | {u['email']:<25} | {u['password']:<10} | {u['role']:<8}")
+    print("====================================================================\n")
+    
     conn.close()
-except Exception as e:
-    print(f"Error: {e}")
+
+if __name__ == "__main__":
+    check_users()
+
+

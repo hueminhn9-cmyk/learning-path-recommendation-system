@@ -10,18 +10,23 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout
+try:
+    import tensorflow as tf
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import Dense, Dropout
+    HAS_TF = True
+except Exception:
+    HAS_TF = False
+    tf = None
 
 # Ensure directories exist
 os.makedirs("dataset", exist_ok=True)
 os.makedirs("model", exist_ok=True)
 
-print("[INFO] Generating 5,000 Multi-Subject Student Academic Dataset Samples...")
+print("[INFO] Generating 10,000 Multi-Subject Student Academic Dataset Samples...")
 
 np.random.seed(42)
-n_rows = 5000
+n_rows = 10000
 
 subjects = [
     "Machine Learning", 
@@ -100,19 +105,27 @@ X_train, X_test, y_train, y_test = train_test_split(X_scaled, y_labels, test_siz
 
 print(f"[INFO] Dataset split: {len(X_train)} Training Samples, {len(X_test)} Testing Samples.")
 
-# 4. Train Keras Deep Learning ANN Model
-print("[INFO] Training Keras Deep ANN Model...")
-ann_model = Sequential([
-    Dense(32, activation='relu', input_shape=(3,)),
-    Dropout(0.1),
-    Dense(16, activation='relu'),
-    Dense(3, activation='softmax')
-])
+metrics_summary = []
 
-ann_model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-ann_model.fit(X_train, y_train, epochs=40, batch_size=32, validation_data=(X_test, y_test), verbose=0)
+# 4. Train Keras Deep Learning ANN Model (if TF available)
+ann_model = None
+if HAS_TF:
+    try:
+        print("[INFO] Training Keras Deep ANN Model...")
+        ann_model = Sequential([
+            Dense(32, activation='relu', input_shape=(3,)),
+            Dropout(0.1),
+            Dense(16, activation='relu'),
+            Dense(3, activation='softmax')
+        ])
 
-ann_test_preds = np.argmax(ann_model.predict(X_test, verbose=0), axis=1)
+        ann_model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        ann_model.fit(X_train, y_train, epochs=40, batch_size=32, validation_data=(X_test, y_test), verbose=0)
+
+        ann_test_preds = np.argmax(ann_model.predict(X_test, verbose=0), axis=1)
+    except Exception as e:
+        print(f"[WARNING] Could not train ANN model with Keras/TF: {e}")
+        ann_model = None
 
 # 5. Train Benchmark Classifiers
 print("[INFO] Training Random Forest Classifier...")
@@ -141,20 +154,26 @@ def get_metrics(name, y_true, y_pred):
         "confusion_matrix": confusion_matrix(y_true, y_pred).tolist()
     }
 
-metrics_summary = [
-    get_metrics("Artificial Neural Network (Keras ANN)", y_test, ann_test_preds),
+if ann_model is not None:
+    metrics_summary.append(get_metrics("Artificial Neural Network (Keras ANN)", y_test, ann_test_preds))
+
+metrics_summary.extend([
     get_metrics("Random Forest Classifier", y_test, rf_preds),
     get_metrics("Decision Tree Classifier", y_test, dt_preds),
     get_metrics("Support Vector Machine (SVM)", y_test, svm_preds)
-]
+])
 
 # 7. Save Models and Metadata
-ann_model.save("model/student_model.h5")
+if ann_model is not None:
+    ann_model.save("model/student_model.h5")
+
+joblib.dump(rf_model, "model/sklearn_model.pkl")
 joblib.dump(scaler, "model/scaler.pkl")
 joblib.dump(level_map, "model/level_map.pkl")
 
 with open("model/model_metrics.json", "w") as f:
     json.dump(metrics_summary, f, indent=2)
 
-print("\n[SUCCESS] All models trained on 5,000 samples and metrics saved to model/model_metrics.json.")
+print("\n[SUCCESS] All models trained on 10,000 samples and metrics saved to model/model_metrics.json.")
 print(json.dumps(metrics_summary, indent=2))
+
